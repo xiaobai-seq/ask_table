@@ -56,8 +56,22 @@ class DashScopeLLMProvider:
 
 
 def default_llm_provider() -> LLMProvider | None:
-    """默认关闭 LLM，让项目开箱即可跑测试；显式环境变量才启用。"""
+    """默认关闭 LLM，让项目开箱即可跑测试；显式配置才启用。
 
-    if os.getenv("TEXT2SQL_USE_LLM") == "1" and os.getenv("DASHSCOPE_API_KEY"):
-        return DashScopeLLMProvider()
-    return None
+    配置统一走 Settings（其底层仍读同名环境变量，兼容旧用法），
+    缺 pydantic-settings 等异常时回退到 os.getenv，保证降级不报错。
+    """
+
+    try:
+        from text2sql.config import Settings
+
+        settings = Settings()
+        if settings.use_llm and settings.dashscope_api_key:
+            return DashScopeLLMProvider(
+                model=settings.dashscope_llm_model, api_key=settings.dashscope_api_key
+            )
+        return None
+    except Exception:  # pragma: no cover - 配置异常时退回环境变量判断
+        if os.getenv("TEXT2SQL_USE_LLM") == "1" and os.getenv("DASHSCOPE_API_KEY"):
+            return DashScopeLLMProvider()
+        return None

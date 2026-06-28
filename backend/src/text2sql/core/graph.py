@@ -14,9 +14,12 @@ from __future__ import annotations
 """
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import AsyncIterator
 
+from text2sql.accuracy.few_shot import FewShotStore
+from text2sql.accuracy.schema_semantics import SchemaSemantics
 from text2sql.core.clarification import AmbiguityDetector
 from text2sql.core.context import ConversationMemory
 from text2sql.core.executor import QueryExecutor
@@ -24,7 +27,6 @@ from text2sql.core.llm import LLMProvider, default_llm_provider
 from text2sql.core.models import (
     AgentState,
     Clarification,
-    ConversationTurn,
     RelationshipPath,
     RetrievalHit,
     TableInfo,
@@ -37,12 +39,15 @@ from text2sql.core.retrieval import HybridTableRetriever
 from text2sql.core.schema import load_schema
 from text2sql.core.sql_generator import PromptedSQLGenerator
 from text2sql.core.summarizer import DataInsightSummarizer
+from text2sql.persistence.repository import HistoryRecord
 
 try:  # pragma: no cover - import path differs by langgraph version
     from langgraph.graph import END, START, StateGraph
 except Exception:  # pragma: no cover
     END = START = None
     StateGraph = None
+
+logger = logging.getLogger(__name__)
 
 
 class Text2SQLWorkflow:
@@ -60,6 +65,10 @@ class Text2SQLWorkflow:
         memory: ConversationMemory | None = None,
         relationship_resolver: RelationshipResolver | None = None,
         llm_provider: LLMProvider | None = None,
+        schema_semantics: SchemaSemantics | None = None,
+        few_shot_store: FewShotStore | None = None,
+        few_shot_top_k: int = 3,
+        sql_repair_max_retries: int = 2,
     ) -> None:
         # schema 可以由调用方直接注入，也可以从数据库连接动态 introspect。
         # 测试里常直接传 tables；API/CLI 则通常走 database_url_or_path。
@@ -70,16 +79,27 @@ class Text2SQLWorkflow:
         self.tables = tables
         self.database_url_or_path = database_url_or_path
 
+        # schema 语义元数据（中文别名/枚举字典）默认空，缺失不影响主链路；
+        # 同时供检索语料增强与 SQL prompt 注入两处共享。
+        self.schema_semantics = schema_semantics or SchemaSemantics.empty()
+
         # 下面这些组件分别对应主链路中的一个阶段；默认实现都支持本地可测降级。
         self.memory = memory or ConversationMemory()
-        self.retriever = HybridTableRetriever(tables, cache_dir=cache_dir)
+        self.retriever = HybridTableRetriever(tables, cache_dir=cache_dir, semantics=self.schema_semantics)
         self.relationship_resolver = relationship_resolver or default_relationship_resolver(tables)
         llm_provider = llm_provider or default_llm_provider()
-        self.sql_generator = PromptedSQLGenerator(llm_provider)
+        self.sql_generator = PromptedSQLGenerator(
+            llm_provider,
+            semantics=self.schema_semantics,
+            few_shot_store=few_shot_store,
+            few_shot_top_k=few_shot_top_k,
+        )
         self.ambiguity_detector = AmbiguityDetector()
         self.executor = QueryExecutor(database_url_or_path, tables) if database_url_or_path else None
         self.summarizer = DataInsightSummarizer(llm_provider)
         self.chart_recommender = ChartRecommender()
+        # SQL 自修复重试上限：执行报错时最多回 LLM 重生成的次数，默认 2（取自 settings）。
+        self.sql_repair_max_retries = sql_repair_max_retries
         self.graph = self._build_graph()
 
     def _build_graph(self):
@@ -94,6 +114,7 @@ class Text2SQLWorkflow:
         graph.add_node("table_relationship", self.table_relationship)
         graph.add_node("sql_generator", self.generate_sql)
         graph.add_node("sql_executor", self.execute_sql)
+        graph.add_node("sql_repair", self.repair_sql)
         graph.add_node("summarize", self.summarize)
         graph.add_node("data_render", self.render)
         graph.add_edge(START, "schema_inspector")
@@ -112,10 +133,26 @@ class Text2SQLWorkflow:
             lambda state: "end" if not state.get("generated_sql") else "continue",
             {"end": END, "continue": "sql_executor"},
         )
-        graph.add_edge("sql_executor", "summarize")
+        # 执行后判定：报错且未达重试上限则进入 sql_repair 自修复回环，否则继续总结。
+        graph.add_conditional_edges(
+            "sql_executor",
+            self._route_after_execution,
+            {"repair": "sql_repair", "continue": "summarize"},
+        )
+        # 修复后重新执行，形成 executor → repair → executor 的有界回环。
+        graph.add_edge("sql_repair", "sql_executor")
         graph.add_edge("summarize", "data_render")
         graph.add_edge("data_render", END)
         return graph.compile()
+
+    def _route_after_execution(self, state: AgentState) -> str:
+        """判断执行结果是否需要自修复：有错误且未超重试上限才回环。"""
+
+        result = state.get("execution_result")
+        attempts = state.get("attempts", 0)
+        if result is not None and result.error and attempts < self.sql_repair_max_retries:
+            return "repair"
+        return "continue"
 
     async def run(self, query: str, session_id: str = "default") -> AgentState:
         # run 返回最终完整状态，适合测试、评测 CLI 或一次性调用。
@@ -143,16 +180,16 @@ class Text2SQLWorkflow:
                     yield node_name, partial
             return
 
+        def _cancelled() -> bool:
+            return bool(cancel_event and cancel_event.is_set())
+
+        # 前置线性节点：召回 → 关系 → 生成；澄清或空 SQL 时提前结束。
         for node_name, node in (
             ("schema_inspector", self.schema_inspector),
             ("table_relationship", self.table_relationship),
             ("sql_generator", self.generate_sql),
-            ("sql_executor", self.execute_sql),
-            ("summarize", self.summarize),
-            ("data_render", self.render),
         ):
-            # 手动 fallback 与 LangGraph 链路保持同一顺序和同一中断语义。
-            if cancel_event and cancel_event.is_set():
+            if _cancelled():
                 yield "cancelled", {"cancelled": True}
                 return
             partial = await node(state)
@@ -160,6 +197,35 @@ class Text2SQLWorkflow:
             yield node_name, partial
             if state.get("clarification") or (node_name == "sql_generator" and not state.get("generated_sql")):
                 return
+
+        # 执行 + 自修复有界回环：与 LangGraph 的 sql_executor↔sql_repair 条件边保持同一语义。
+        while True:
+            if _cancelled():
+                yield "cancelled", {"cancelled": True}
+                return
+            partial = await self.execute_sql(state)
+            state.update(partial)
+            yield "sql_executor", partial
+            if self._route_after_execution(state) != "repair":
+                break
+            if _cancelled():
+                yield "cancelled", {"cancelled": True}
+                return
+            partial = await self.repair_sql(state)
+            state.update(partial)
+            yield "sql_repair", partial
+
+        # 后置线性节点：总结 → 渲染。
+        for node_name, node in (
+            ("summarize", self.summarize),
+            ("data_render", self.render),
+        ):
+            if _cancelled():
+                yield "cancelled", {"cancelled": True}
+                return
+            partial = await node(state)
+            state.update(partial)
+            yield node_name, partial
 
     async def schema_inspector(self, state: AgentState) -> AgentState:
         # 入口节点：结合会话历史改写问题，再用混合召回找到最可能相关的表。
@@ -199,6 +265,11 @@ class Text2SQLWorkflow:
             state.get("table_relationship", []),
             context,
         )
+        # 关键节点结构化日志：带 trace_id 贯穿，便于按链路回溯生成的 SQL。
+        logger.info(
+            "sql_generated",
+            extra={"trace_id": state.get("trace_id"), "chart_type": plan.chart_type},
+        )
         return {"sql_plan": plan, "generated_sql": plan.sql, "chart_type": plan.chart_type}
 
     async def execute_sql(self, state: AgentState) -> AgentState:
@@ -206,7 +277,41 @@ class Text2SQLWorkflow:
         if not self.executor:
             return {"execution_result": None, "errors": ["No database configured"]}
         result = await self.executor.execute(state.get("generated_sql"))
+        logger.info(
+            "sql_executed",
+            extra={
+                "trace_id": state.get("trace_id"),
+                "row_count": result.row_count,
+                "error": result.error,
+            },
+        )
         return {"execution_result": result}
+
+    async def repair_sql(self, state: AgentState) -> AgentState:
+        # 自修复节点：带着上一次执行报错回 LLM 重生成 SQL，attempts 记录已重试次数。
+        attempts = state.get("attempts", 0) + 1
+        result = state.get("execution_result")
+        error = result.error if result and result.error else "unknown execution error"
+        session_id = state.get("session_id", "default")
+        logger.warning(
+            "sql_repair_attempt",
+            extra={"trace_id": state.get("trace_id"), "attempts": attempts, "error": error},
+        )
+        plan = await self.sql_generator.aregenerate_with_error(
+            state.get("generated_sql"),
+            error,
+            state.get("rewritten_query") or state["user_query"],
+            state.get("retrieval_hits", []),
+            state.get("table_relationship", []),
+            self.memory.build_context_block(session_id),
+        )
+        # 透出字段与契约一致：attempts / generated_sql / sql_plan（chart_type 一并刷新）。
+        return {
+            "attempts": attempts,
+            "sql_plan": plan,
+            "generated_sql": plan.sql,
+            "chart_type": plan.chart_type,
+        }
 
     async def summarize(self, state: AgentState) -> AgentState:
         # 总结阶段只依赖执行结果；无数据库时保留已生成 SQL，给调用方自行执行。
@@ -223,22 +328,32 @@ class Text2SQLWorkflow:
         if result is None or plan is None:
             return {}
         render_spec = self.chart_recommender.recommend(state["user_query"], plan, result)
-        self._remember_turn(state, render_spec.title)
+        self._remember_turn(state, render_spec)
         return {"render_spec": render_spec, "chart_type": render_spec.chart_type}
 
-    def _remember_turn(self, state: AgentState, summary: str) -> None:
-        # 成功走到渲染阶段后，把本轮问题、SQL 和表名放入 session 记忆，供追问继承。
+    def _remember_turn(self, state: AgentState, render_spec) -> None:
+        # 成功走到渲染阶段后，落库完整一轮记录：既供追问改写，也供 REST 历史回看。
         session_id = state.get("session_id", "default")
         hits: list[RetrievalHit] = state.get("retrieval_hits", [])
-        self.memory.add_turn(
-            session_id,
-            ConversationTurn(
+        result = state.get("execution_result")
+        # status 反映本轮端到端结果，便于历史列表区分成功/失败轮次。
+        status = "success" if result is not None and not result.error else "error"
+        self.memory.add_record(
+            HistoryRecord(
+                session_id=session_id,
                 user_query=state["user_query"],
                 rewritten_query=state.get("rewritten_query") or state["user_query"],
                 generated_sql=state.get("generated_sql"),
-                tables=tuple(hit.table.name for hit in hits),
-                summary=state.get("summary") or summary,
-            ),
+                tables=[hit.table.name for hit in hits],
+                summary=state.get("summary") or render_spec.title,
+                chart_type=render_spec.chart_type,
+                row_count=result.row_count if result else None,
+                elapsed_ms=result.elapsed_ms if result else None,
+                trace_id=state.get("trace_id"),
+                status=status,
+                render_spec=to_plain(render_spec),
+                execution_result=to_plain(result),
+            )
         )
 
     @staticmethod

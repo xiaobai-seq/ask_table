@@ -8,9 +8,13 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from text2sql.core.models import ChartType, RelationshipPath, RetrievalHit, SQLPlan, TableInfo
+
+if TYPE_CHECKING:  # pragma: no cover - 仅类型注解使用
+    from text2sql.accuracy.few_shot import FewShotStore
+    from text2sql.accuracy.schema_semantics import SchemaSemantics
 
 
 SQL_GENERATION_HARD_RULES = (
@@ -35,6 +39,18 @@ class LLMProvider(Protocol):
 class DeterministicSQLGenerator:
     """规则 fallback：保证测试稳定，也展示复杂 SQL 的模板化生成方式。"""
 
+    def __init__(
+        self,
+        semantics: "SchemaSemantics | None" = None,
+        few_shot_store: "FewShotStore | None" = None,
+        few_shot_top_k: int = 3,
+    ) -> None:
+        # semantics 可选：注入枚举字典等业务语义，缺省时退化为纯结构化 prompt。
+        # few_shot_store 可选：注入「问题→SQL」示例，仅影响 LLM prompt，规则路径不受影响。
+        self.semantics = semantics
+        self.few_shot_store = few_shot_store
+        self.few_shot_top_k = few_shot_top_k
+
     def build_prompt(
         self,
         query: str,
@@ -47,6 +63,12 @@ class DeterministicSQLGenerator:
         schema = "\n".join(hit.table.brief_schema() for hit in hits)
         relation_hints = "\n".join(path.to_sql_hint() for path in relationships if path.to_sql_hint())
         rules = "\n".join(f"{index + 1}. {rule}" for index, rule in enumerate(SQL_GENERATION_HARD_RULES))
+        # 枚举字典提示：告诉生成器各状态/品类字段的合法取值，避免编造不存在的值。
+        enum_hints = ""
+        if self.semantics:
+            enum_hints = self.semantics.prompt_hints([hit.table.name for hit in hits])
+        # few-shot 示例：检索与当前问题最相似的优质「问题→SQL」，引导 LLM 模仿写法。
+        few_shot_block = self._few_shot_block(query)
         return f"""你是一名严谨的企业 DBA 和数据分析工程师。
 {context_block}
 
@@ -59,11 +81,25 @@ class DeterministicSQLGenerator:
 关系路径:
 {relation_hints or "无"}
 
+字段枚举字典:
+{enum_hints or "无"}
+
+参考示例:
+{few_shot_block or "无"}
+
 用户问题:
 {query}
 
 请输出 JSON: {{"sql": "... or null", "chart_type": "...", "reasoning": "..."}}
 """
+
+    def _few_shot_block(self, query: str) -> str:
+        if not self.few_shot_store:
+            return ""
+        from text2sql.accuracy.few_shot import format_examples_block
+
+        examples = self.few_shot_store.search(query, self.few_shot_top_k)
+        return format_examples_block(examples)
 
     def generate(
         self,
@@ -293,8 +329,68 @@ SELECT * FROM hierarchy ORDER BY path
 class PromptedSQLGenerator(DeterministicSQLGenerator):
     """LLM 优先、规则兜底的 SQL 生成器。"""
 
-    def __init__(self, llm_provider: LLMProvider | None = None) -> None:
+    def __init__(
+        self,
+        llm_provider: LLMProvider | None = None,
+        semantics: "SchemaSemantics | None" = None,
+        few_shot_store: "FewShotStore | None" = None,
+        few_shot_top_k: int = 3,
+    ) -> None:
+        super().__init__(semantics, few_shot_store, few_shot_top_k)
         self.llm_provider = llm_provider
+
+    def build_repair_prompt(
+        self,
+        failed_sql: str | None,
+        error: str,
+        query: str,
+        hits: list[RetrievalHit],
+        relationships: list[RelationshipPath],
+        context_block: str = "",
+    ) -> str:
+        # 在原始生成 prompt 基础上附加失败 SQL 与执行报错，引导 LLM 定向修复。
+        base = self.build_prompt(query, hits, relationships, context_block)
+        return f"""{base}
+
+上一次生成的 SQL 执行失败，请基于候选表与字段修复后重新输出（仍只输出 JSON）。
+失败 SQL:
+{failed_sql or "NULL"}
+
+执行错误:
+{error}
+"""
+
+    async def aregenerate_with_error(
+        self,
+        failed_sql: str | None,
+        error: str,
+        query: str,
+        hits: list[RetrievalHit],
+        relationships: list[RelationshipPath],
+        context_block: str = "",
+    ) -> SQLPlan:
+        """SQL 自修复：带着执行报错重新生成。无 LLM 时退化为规则生成器。"""
+
+        if not self.llm_provider:
+            # 规则生成器无法利用报错信息，返回规则计划；由工作流的重试上限兜底，避免空转。
+            return self.generate(query, hits, relationships, context_block)
+        prompt = self.build_repair_prompt(failed_sql, error, query, hits, relationships, context_block)
+        try:
+            response = await self.llm_provider.complete(prompt)
+            plan = parse_llm_sql_plan(response)
+            if plan.sql:
+                return plan
+            return self.generate(query, hits, relationships, context_block)
+        except Exception as exc:
+            fallback = self.generate(query, hits, relationships, context_block)
+            return SQLPlan(
+                fallback.sql,
+                fallback.chart_type,
+                reasoning=f"{fallback.reasoning} repair fallback because: {exc}",
+                confidence=min(fallback.confidence, 0.6),
+                advanced_features=fallback.advanced_features,
+                warnings=(*fallback.warnings, "repair_fallback"),
+            )
 
     async def agenerate(
         self,
@@ -373,7 +469,8 @@ def pick_query_dimension(query: str, table: TableInfo):
     if "城市" in query:
         candidates.append("city")
     if any(word in query for word in ("客户", "用户")):
-        candidates.extend(["customer_name", "user_name", "name"])
+        # 不加裸 "name"：否则会误命中 products.product_name，把“按客户地区”查询拼到商品维表。
+        candidates.extend(["customer_name", "user_name"])
     if any(word in query for word in ("商品", "品类", "类别")):
         candidates.extend(["category", "product_name", "name"])
     for wanted in candidates:
