@@ -15,6 +15,7 @@ from typing import AsyncIterator
 from text2sql.accuracy.few_shot import InMemoryFewShotStore
 from text2sql.accuracy.schema_semantics import SchemaSemantics
 from text2sql.api.errors import build_error, register_exception_handlers
+from text2sql.api.rate_limit import RateLimitMiddleware, build_rate_limiter
 from text2sql.config import Settings
 from text2sql.core.graph import Text2SQLWorkflow
 from text2sql.core.models import to_plain
@@ -72,8 +73,12 @@ def create_app() -> "FastAPI":
     if FastAPI is None:  # pragma: no cover
         raise RuntimeError("FastAPI is not installed")
     app = FastAPI(title="Enterprise Text2SQL", version="0.1.0")
+    settings = Settings()
     # 统一把未捕获异常收敛成 {code, message, trace_id} 结构化错误体。
     register_exception_handlers(app)
+    # 限流中间件：阈值取 settings；配置可用 Redis 用 Redis，否则降级内存令牌桶。
+    if RateLimitMiddleware is not None:
+        app.add_middleware(RateLimitMiddleware, limiter=build_rate_limiter(settings))
 
     @app.on_event("startup")
     async def startup() -> None:
