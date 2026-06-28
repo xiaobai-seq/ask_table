@@ -46,7 +46,9 @@ export default function Chat() {
             </Empty>
           </div>
         ) : (
-          turns.map((turn) => <TurnView key={turn.id} turn={turn} onClarify={(opt) => void send(opt)} />)
+          turns.map((turn) => (
+            <TurnView key={turn.id} turn={turn} sending={sending} onClarify={(opt) => void send(opt)} />
+          ))
         )}
         <div ref={bottomRef} />
       </div>

@@ -8,6 +8,8 @@ import type { ChatTurn } from "../../store/turn";
 
 interface TurnViewProps {
   turn: ChatTurn;
+  // 是否有查询正在进行中：用于禁用澄清选项，避免与流式查询并发。
+  sending: boolean;
   onClarify: (option: string) => void;
 }
 
@@ -18,7 +20,7 @@ function hasResult(turn: ChatTurn): boolean {
 }
 
 // 单轮对话视图：用户气泡（右）+ 助手区（左，含进度、澄清、结果）。
-export default function TurnView({ turn, onClarify }: TurnViewProps) {
+export default function TurnView({ turn, sending, onClarify }: TurnViewProps) {
   const { result } = turn;
   return (
     <div style={{ marginBottom: 24 }}>
@@ -56,7 +58,11 @@ export default function TurnView({ turn, onClarify }: TurnViewProps) {
 
             {turn.status === "clarifying" && result.clarification && (
               <div style={{ marginTop: 16 }}>
-                <ClarificationCard clarification={result.clarification} onSelect={onClarify} />
+                <ClarificationCard
+                  clarification={result.clarification}
+                  disabled={sending}
+                  onSelect={onClarify}
+                />
               </div>
             )}
 
