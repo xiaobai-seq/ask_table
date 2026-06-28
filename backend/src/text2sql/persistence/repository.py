@@ -134,9 +134,8 @@ class InMemoryHistoryRepository:
         if target is None:
             return False
         self._records = [r for r in self._records if r.id != history_id]
-        # 若该会话已无任何历史，则连同会话元信息一并清理。
-        if not any(r.session_id == target.session_id for r in self._records):
-            self._sessions.pop(target.session_id, None)
+        # 只删该条历史；即使会话已清空也保留会话元信息（turn_count 由 list_sessions 实时计为 0，
+        # title 仍保留）。如需移除整个会话请用 delete_session。
         return True
 
 
@@ -253,16 +252,14 @@ class SqlAlchemyHistoryRepository:
             session_id = row.session_id
             session.delete(row)
             session.flush()
-            # 同步会话计数；若已无历史则一并删除会话元信息。
+            # 只删该条历史并同步 turn_count（可能归零）；会话元信息始终保留，
+            # 清空整个会话请用 delete_session。
             remaining = (
                 session.query(QueryHistory).filter(QueryHistory.session_id == session_id).count()
             )
             parent = session.get(Session, session_id)
             if parent is not None:
-                if remaining == 0:
-                    session.delete(parent)
-                else:
-                    parent.turn_count = remaining
+                parent.turn_count = remaining
             session.commit()
             return True
 

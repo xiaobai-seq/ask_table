@@ -105,6 +105,18 @@ class HistoryRepositoryContract:
         self.assertEqual(len(remaining), 1)
         self.assertFalse(repo.delete_history(999999))
 
+    def test_delete_last_history_keeps_session(self):
+        # 删光某会话的所有历史后仍保留会话元信息：turn_count 归零、title 保留。
+        repo = self.make_repo()
+        self._seed(repo)
+        for record in repo.get_session_history("s1"):
+            self.assertTrue(repo.delete_history(record.id))
+        self.assertEqual(repo.get_session_history("s1"), [])
+        by_id = {s.session_id: s for s in repo.list_sessions()}
+        self.assertIn("s1", by_id)
+        self.assertEqual(by_id["s1"].turn_count, 0)
+        self.assertEqual(by_id["s1"].title, "按月份统计订单金额趋势")
+
 
 class InMemoryHistoryRepositoryTests(HistoryRepositoryContract, unittest.TestCase):
     def make_repo(self):
