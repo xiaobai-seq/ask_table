@@ -39,6 +39,9 @@ if _HAS_PYDANTIC_SETTINGS:
         rate_limit_per_minute: int = 60
         cors_origins: list[str] = ["*"]
         few_shot_top_k: int = 3
+        # 准确率增强资源：schema 语义元数据与 few-shot 种子库（缺失时安全降级）。
+        schema_metadata_path: str = "./examples/schema_metadata.yaml"
+        few_shot_seed_path: str = "./examples/few_shot_seed.jsonl"
 
 else:
 
@@ -58,3 +61,9 @@ else:
             self.rate_limit_per_minute = int(os.getenv("TEXT2SQL_RATE_LIMIT_PER_MINUTE", "60"))
             self.cors_origins = ["*"]
             self.few_shot_top_k = int(os.getenv("TEXT2SQL_FEW_SHOT_TOP_K", "3"))
+            self.schema_metadata_path = os.getenv(
+                "TEXT2SQL_SCHEMA_METADATA_PATH", "./examples/schema_metadata.yaml"
+            )
+            self.few_shot_seed_path = os.getenv(
+                "TEXT2SQL_FEW_SHOT_SEED_PATH", "./examples/few_shot_seed.jsonl"
+            )

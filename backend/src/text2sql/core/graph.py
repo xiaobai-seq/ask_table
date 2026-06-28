@@ -17,6 +17,7 @@ import asyncio
 from pathlib import Path
 from typing import AsyncIterator
 
+from text2sql.accuracy.schema_semantics import SchemaSemantics
 from text2sql.core.clarification import AmbiguityDetector
 from text2sql.core.context import ConversationMemory
 from text2sql.core.executor import QueryExecutor
@@ -60,6 +61,7 @@ class Text2SQLWorkflow:
         memory: ConversationMemory | None = None,
         relationship_resolver: RelationshipResolver | None = None,
         llm_provider: LLMProvider | None = None,
+        schema_semantics: SchemaSemantics | None = None,
     ) -> None:
         # schema 可以由调用方直接注入，也可以从数据库连接动态 introspect。
         # 测试里常直接传 tables；API/CLI 则通常走 database_url_or_path。
@@ -70,12 +72,16 @@ class Text2SQLWorkflow:
         self.tables = tables
         self.database_url_or_path = database_url_or_path
 
+        # schema 语义元数据（中文别名/枚举字典）默认空，缺失不影响主链路；
+        # 同时供检索语料增强与 SQL prompt 注入两处共享。
+        self.schema_semantics = schema_semantics or SchemaSemantics.empty()
+
         # 下面这些组件分别对应主链路中的一个阶段；默认实现都支持本地可测降级。
         self.memory = memory or ConversationMemory()
-        self.retriever = HybridTableRetriever(tables, cache_dir=cache_dir)
+        self.retriever = HybridTableRetriever(tables, cache_dir=cache_dir, semantics=self.schema_semantics)
         self.relationship_resolver = relationship_resolver or default_relationship_resolver(tables)
         llm_provider = llm_provider or default_llm_provider()
-        self.sql_generator = PromptedSQLGenerator(llm_provider)
+        self.sql_generator = PromptedSQLGenerator(llm_provider, semantics=self.schema_semantics)
         self.ambiguity_detector = AmbiguityDetector()
         self.executor = QueryExecutor(database_url_or_path, tables) if database_url_or_path else None
         self.summarizer = DataInsightSummarizer(llm_provider)

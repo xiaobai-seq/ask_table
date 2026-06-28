@@ -12,11 +12,15 @@ import json
 import math
 from collections import Counter, defaultdict
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from text2sql.core.embeddings import EmbeddingProvider, cosine, default_embedding_provider
 from text2sql.core.models import RetrievalHit, TableInfo
 from text2sql.core.rerank import Reranker, default_reranker
 from text2sql.core.tokenization import overlap_ratio, tokenize
+
+if TYPE_CHECKING:  # pragma: no cover - 仅类型注解使用，避免运行期可选依赖耦合
+    from text2sql.accuracy.schema_semantics import SchemaSemantics
 
 
 def schema_fingerprint(tables: list[TableInfo]) -> str:
@@ -92,15 +96,25 @@ class PersistentVectorIndex:
         tables: list[TableInfo],
         embedding_provider: EmbeddingProvider | None = None,
         cache_dir: str | Path = ".text2sql_cache",
+        documents: list[str] | None = None,
     ) -> None:
         self.tables = tables
+        # documents 允许调用方注入「已叠加语义增强」的检索文档；缺省回退到表自身文档。
+        self.documents = documents if documents is not None else [table.document() for table in tables]
         self.embedding_provider = embedding_provider or default_embedding_provider()
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.cache_path = self.cache_dir / "schema_vectors.json"
-        self.fingerprint = schema_fingerprint(tables)
+        # fingerprint 同时绑定结构与文档内容：语义元数据变化也会触发向量重建，避免命中陈旧缓存。
+        self.fingerprint = self._compute_fingerprint(tables, self.documents)
         self.vectors: list[list[float]] = []
         self._load_or_rebuild()
+
+    @staticmethod
+    def _compute_fingerprint(tables: list[TableInfo], documents: list[str]) -> str:
+        structural = schema_fingerprint(tables)
+        doc_hash = hashlib.md5("\u0001".join(documents).encode("utf-8")).hexdigest()
+        return f"{structural}:{doc_hash}"
 
     def _load_or_rebuild(self) -> None:
         # 缓存只在 fingerprint 一致时复用；任何表/字段/外键变化都会触发重建。
@@ -113,8 +127,7 @@ class PersistentVectorIndex:
             except Exception:
                 pass
 
-        documents = [table.document() for table in self.tables]
-        self.vectors = self.embedding_provider.batch_embed(documents)
+        self.vectors = self.embedding_provider.batch_embed(self.documents)
         payload = {
             "fingerprint": self.fingerprint,
             "tables": [table.name for table in self.tables],
@@ -143,13 +156,25 @@ class HybridTableRetriever:
         reranker: Reranker | None = None,
         cache_dir: str | Path = ".text2sql_cache",
         rrf_k: int = 60,
+        semantics: "SchemaSemantics | None" = None,
     ) -> None:
         self.tables = tables
-        self.documents = [table.document() for table in tables]
+        self.semantics = semantics
+        # 把人工维护的中文别名/描述/枚举词拼进检索文档，让中文提问更易命中英文 schema。
+        self.documents = [self._build_document(table) for table in tables]
         self.bm25 = BM25Index(self.documents)
-        self.vector_index = PersistentVectorIndex(tables, embedding_provider, cache_dir)
+        self.vector_index = PersistentVectorIndex(
+            tables, embedding_provider, cache_dir, documents=self.documents
+        )
         self.reranker = reranker or default_reranker()
         self.rrf_k = rrf_k
+
+    def _build_document(self, table: TableInfo) -> str:
+        base = table.document()
+        if not self.semantics:
+            return base
+        enrichment = self.semantics.enrich_corpus(table.name)
+        return f"{base} {enrichment}".strip() if enrichment else base
 
     def retrieve(self, query: str, top_k: int = 6, pool_size: int | None = None) -> list[RetrievalHit]:
         if not self.tables:

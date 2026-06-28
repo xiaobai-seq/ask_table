@@ -11,6 +11,8 @@ import asyncio
 import json
 from pathlib import Path
 
+from text2sql.accuracy.schema_semantics import SchemaSemantics
+from text2sql.config import Settings
 from text2sql.core.graph import Text2SQLWorkflow
 from text2sql.core.models import EvalCase, EvalResult, to_plain
 from text2sql.core.sql_validator import normalize_sql
@@ -114,7 +116,9 @@ def main() -> None:
     args = parser.parse_args()
 
     db = args.db if "://" in args.db else f"sqlite:///{args.db}"
-    workflow = Text2SQLWorkflow(database_url_or_path=db)
+    settings = Settings()
+    semantics = SchemaSemantics.from_yaml(settings.schema_metadata_path)
+    workflow = Text2SQLWorkflow(database_url_or_path=db, schema_semantics=semantics)
     cases = load_cases(args.cases)
     results = asyncio.run(EvaluationRunner(workflow).run(cases))
     write_report(args.report, results)

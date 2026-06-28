@@ -12,6 +12,7 @@ import logging
 import uuid
 from typing import AsyncIterator
 
+from text2sql.accuracy.schema_semantics import SchemaSemantics
 from text2sql.api.errors import build_error, register_exception_handlers
 from text2sql.config import Settings
 from text2sql.core.graph import Text2SQLWorkflow
@@ -78,7 +79,12 @@ def create_app() -> "FastAPI":
         global workflow
         # 默认指向样例库；生产环境通过 TEXT2SQL_DATABASE_URL 接真实数据源。
         settings = Settings()
-        workflow = Text2SQLWorkflow(database_url_or_path=settings.database_url)
+        # 加载 schema 语义元数据（中文别名/枚举字典），文件缺失时自动降级为空。
+        semantics = SchemaSemantics.from_yaml(settings.schema_metadata_path)
+        workflow = Text2SQLWorkflow(
+            database_url_or_path=settings.database_url,
+            schema_semantics=semantics,
+        )
 
     @app.post("/query")
     async def query(request: QueryRequest):

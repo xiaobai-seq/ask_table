@@ -1,0 +1,60 @@
+# Schema 语义元数据（人工维护）
+#
+# 表/列附中文别名、业务描述与枚举字典：
+# - 召回阶段：别名/描述/枚举词并入检索语料，提升中文提问的命中率；
+# - 生成阶段：枚举字典注入 SQL prompt，避免生成器编造不存在的取值。
+# 覆盖 examples/demo.db 样例库。缺失的表/列会被安全忽略。
+
+tables:
+  orders:
+    alias: 订单
+    description: 订单交易事实表，记录每笔订单的金额、状态与下单时间
+    columns:
+      order_date:
+        alias: 下单日期
+        description: 订单创建日期，用于趋势与环比分析
+      status:
+        alias: 订单状态
+        description: 订单当前生命周期状态
+        enum_values: [paid, refunded, pending]
+      total_amount:
+        alias: 订单金额
+        description: 订单总金额（元）
+
+  customers:
+    alias: 客户
+    description: 客户维表，记录客户所属地区与城市
+    columns:
+      region:
+        alias: 客户地区
+        description: 客户所属大区
+        enum_values: [East, North, South, West]
+      city:
+        alias: 客户城市
+
+  products:
+    alias: 商品
+    description: 商品维表，记录商品品类与单价
+    columns:
+      category:
+        alias: 商品品类
+        enum_values: [Office, Electronics, Furniture]
+      unit_price:
+        alias: 商品单价
+
+  order_items:
+    alias: 订单明细
+    description: 订单明细事实表，记录每个订单中各商品的数量与金额
+    columns:
+      quantity:
+        alias: 购买数量
+      amount:
+        alias: 明细金额
+
+  employees:
+    alias: 员工
+    description: 员工组织表，manager_id 自关联表达上下级层级
+    columns:
+      department:
+        alias: 部门
+        enum_values: [Executive, Sales, Data]

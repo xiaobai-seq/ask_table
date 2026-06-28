@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from text2sql.core.models import ChartType, RelationshipPath, RetrievalHit, SQLPlan, TableInfo
+
+if TYPE_CHECKING:  # pragma: no cover - 仅类型注解使用
+    from text2sql.accuracy.schema_semantics import SchemaSemantics
 
 
 SQL_GENERATION_HARD_RULES = (
@@ -35,6 +38,10 @@ class LLMProvider(Protocol):
 class DeterministicSQLGenerator:
     """规则 fallback：保证测试稳定，也展示复杂 SQL 的模板化生成方式。"""
 
+    def __init__(self, semantics: "SchemaSemantics | None" = None) -> None:
+        # semantics 可选：注入枚举字典等业务语义，缺省时退化为纯结构化 prompt。
+        self.semantics = semantics
+
     def build_prompt(
         self,
         query: str,
@@ -47,6 +54,10 @@ class DeterministicSQLGenerator:
         schema = "\n".join(hit.table.brief_schema() for hit in hits)
         relation_hints = "\n".join(path.to_sql_hint() for path in relationships if path.to_sql_hint())
         rules = "\n".join(f"{index + 1}. {rule}" for index, rule in enumerate(SQL_GENERATION_HARD_RULES))
+        # 枚举字典提示：告诉生成器各状态/品类字段的合法取值，避免编造不存在的值。
+        enum_hints = ""
+        if self.semantics:
+            enum_hints = self.semantics.prompt_hints([hit.table.name for hit in hits])
         return f"""你是一名严谨的企业 DBA 和数据分析工程师。
 {context_block}
 
@@ -58,6 +69,9 @@ class DeterministicSQLGenerator:
 
 关系路径:
 {relation_hints or "无"}
+
+字段枚举字典:
+{enum_hints or "无"}
 
 用户问题:
 {query}
@@ -293,7 +307,12 @@ SELECT * FROM hierarchy ORDER BY path
 class PromptedSQLGenerator(DeterministicSQLGenerator):
     """LLM 优先、规则兜底的 SQL 生成器。"""
 
-    def __init__(self, llm_provider: LLMProvider | None = None) -> None:
+    def __init__(
+        self,
+        llm_provider: LLMProvider | None = None,
+        semantics: "SchemaSemantics | None" = None,
+    ) -> None:
+        super().__init__(semantics)
         self.llm_provider = llm_provider
 
     async def agenerate(
