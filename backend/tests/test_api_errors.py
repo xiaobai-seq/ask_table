@@ -1,4 +1,5 @@
 import asyncio
+import json
 import unittest
 
 from text2sql.api import stream_query
@@ -44,6 +45,25 @@ class ApiErrorsTest(unittest.TestCase):
 
         output = asyncio.run(collect())
         self.assertIn("event: error", output)
+
+        # 解析 error 事件的 data JSON：必须是结构化错误体，且不泄露内部异常原文。
+        error_data = self._parse_sse_event_data(output, "error")
+        self.assertIsNotNone(error_data)
+        for field in ("code", "message", "trace_id"):
+            self.assertIn(field, error_data)
+            self.assertTrue(error_data[field])
+        self.assertNotIn("kaboom", error_data["message"])
+
+    @staticmethod
+    def _parse_sse_event_data(sse_text: str, event_name: str) -> dict | None:
+        # SSE 一条事件形如 "event: <name>\ndata: <json>\n\n"，取目标事件的 data 行解析。
+        lines = sse_text.splitlines()
+        for index, line in enumerate(lines):
+            if line == f"event: {event_name}" and index + 1 < len(lines):
+                data_line = lines[index + 1]
+                if data_line.startswith("data: "):
+                    return json.loads(data_line[len("data: ") :])
+        return None
 
     @unittest.skipUnless(_HAS_FASTAPI, "FastAPI/TestClient not installed")
     def test_global_exception_handler_returns_structured_body(self):
