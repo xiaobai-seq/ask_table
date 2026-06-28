@@ -10,7 +10,7 @@ import json
 import re
 from typing import TYPE_CHECKING, Protocol
 
-from text2sql.core.models import ChartType, RelationshipPath, RetrievalHit, SQLPlan, TableInfo
+from text2sql.core.models import RelationshipPath, RetrievalHit, SQLPlan, TableInfo
 
 if TYPE_CHECKING:  # pragma: no cover - 仅类型注解使用
     from text2sql.accuracy.few_shot import FewShotStore

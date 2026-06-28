@@ -26,8 +26,6 @@ from text2sql.core.executor import QueryExecutor
 from text2sql.core.llm import LLMProvider, default_llm_provider
 from text2sql.core.models import (
     AgentState,
-    Clarification,
-    RelationshipPath,
     RetrievalHit,
     TableInfo,
     to_plain,
