@@ -6,7 +6,7 @@ from __future__ import annotations
 前端可以用 RenderSpec 选择 ECharts/表格/KPI 等展示方式。
 """
 
-from text2sql.models import ChartType, ExecutionResult, RenderSpec, SQLPlan
+from text2sql.core.models import ChartType, ExecutionResult, RenderSpec, SQLPlan
 
 
 NUMERIC_HINTS = ("amount", "value", "count", "rate", "price", "metric", "total", "qty", "quantity")

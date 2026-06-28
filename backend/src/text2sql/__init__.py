@@ -1,7 +1,6 @@
 """Enterprise Text2SQL backend package."""
 
-from text2sql.graph import Text2SQLWorkflow
-from text2sql.models import AgentState, ColumnInfo, TableInfo
+from text2sql.core import AgentState, ColumnInfo, TableInfo, Text2SQLWorkflow
 
 __all__ = ["AgentState", "ColumnInfo", "TableInfo", "Text2SQLWorkflow"]
 

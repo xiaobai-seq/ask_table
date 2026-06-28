@@ -13,10 +13,10 @@ import math
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from text2sql.embeddings import EmbeddingProvider, cosine, default_embedding_provider
-from text2sql.models import RetrievalHit, TableInfo
-from text2sql.rerank import Reranker, default_reranker
-from text2sql.tokenization import overlap_ratio, tokenize
+from text2sql.core.embeddings import EmbeddingProvider, cosine, default_embedding_provider
+from text2sql.core.models import RetrievalHit, TableInfo
+from text2sql.core.rerank import Reranker, default_reranker
+from text2sql.core.tokenization import overlap_ratio, tokenize
 
 
 def schema_fingerprint(tables: list[TableInfo]) -> str:

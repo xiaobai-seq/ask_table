@@ -17,11 +17,11 @@ import asyncio
 from pathlib import Path
 from typing import AsyncIterator
 
-from text2sql.clarification import AmbiguityDetector
-from text2sql.context import ConversationMemory
-from text2sql.executor import QueryExecutor
-from text2sql.llm import LLMProvider, default_llm_provider
-from text2sql.models import (
+from text2sql.core.clarification import AmbiguityDetector
+from text2sql.core.context import ConversationMemory
+from text2sql.core.executor import QueryExecutor
+from text2sql.core.llm import LLMProvider, default_llm_provider
+from text2sql.core.models import (
     AgentState,
     Clarification,
     ConversationTurn,
@@ -30,13 +30,13 @@ from text2sql.models import (
     TableInfo,
     to_plain,
 )
-from text2sql.observability import TraceRecorder
-from text2sql.relationships import RelationshipResolver, default_relationship_resolver
-from text2sql.render import ChartRecommender
-from text2sql.retrieval import HybridTableRetriever
-from text2sql.schema import load_schema
-from text2sql.sql_generator import PromptedSQLGenerator
-from text2sql.summarizer import DataInsightSummarizer
+from text2sql.core.observability import TraceRecorder
+from text2sql.core.relationships import RelationshipResolver, default_relationship_resolver
+from text2sql.core.render import ChartRecommender
+from text2sql.core.retrieval import HybridTableRetriever
+from text2sql.core.schema import load_schema
+from text2sql.core.sql_generator import PromptedSQLGenerator
+from text2sql.core.summarizer import DataInsightSummarizer
 
 try:  # pragma: no cover - import path differs by langgraph version
     from langgraph.graph import END, START, StateGraph

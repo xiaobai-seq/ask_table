@@ -2,10 +2,10 @@ import asyncio
 import tempfile
 import unittest
 
+from text2sql.core.graph import Text2SQLWorkflow
+from text2sql.core.models import EvalCase
+from text2sql.core.sample_data import create_sample_database
 from text2sql.eval import EvaluationRunner
-from text2sql.graph import Text2SQLWorkflow
-from text2sql.models import EvalCase
-from text2sql.sample_data import create_sample_database
 
 
 class WorkflowAndEvalTests(unittest.TestCase):

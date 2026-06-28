@@ -1,8 +1,8 @@
 import unittest
 
-from text2sql.clarification import AmbiguityDetector
-from text2sql.context import ConversationMemory
-from text2sql.models import ColumnInfo, ConversationTurn, RetrievalHit, TableInfo
+from text2sql.core.clarification import AmbiguityDetector
+from text2sql.core.context import ConversationMemory
+from text2sql.core.models import ColumnInfo, ConversationTurn, RetrievalHit, TableInfo
 
 
 class ContextAndClarificationTests(unittest.TestCase):

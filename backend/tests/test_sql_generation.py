@@ -1,8 +1,8 @@
 import unittest
 
-from text2sql.models import ColumnInfo, ForeignKeyInfo, RelationshipPath, RetrievalHit, TableInfo
-from text2sql.sql_generator import DeterministicSQLGenerator, parse_llm_sql_plan
-from text2sql.sql_validator import SQLValidationError, SQLValidator
+from text2sql.core.models import ColumnInfo, ForeignKeyInfo, RelationshipPath, RetrievalHit, TableInfo
+from text2sql.core.sql_generator import DeterministicSQLGenerator, parse_llm_sql_plan
+from text2sql.core.sql_validator import SQLValidationError, SQLValidator
 
 
 class SQLGenerationTests(unittest.TestCase):

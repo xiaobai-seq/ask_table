@@ -9,8 +9,8 @@ HybridTableRetriever 会先用 BM25/向量拿到候选池，再调用这里的 R
 import os
 from typing import Protocol
 
-from text2sql.models import TableInfo
-from text2sql.tokenization import overlap_ratio
+from text2sql.core.models import TableInfo
+from text2sql.core.tokenization import overlap_ratio
 
 
 class Reranker(Protocol):

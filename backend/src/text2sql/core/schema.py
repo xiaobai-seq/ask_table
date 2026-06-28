@@ -11,7 +11,7 @@ import functools
 import sqlite3
 from pathlib import Path
 
-from text2sql.models import ColumnInfo, ForeignKeyInfo, TableInfo
+from text2sql.core.models import ColumnInfo, ForeignKeyInfo, TableInfo
 
 
 def load_schema(database_url_or_path: str) -> list[TableInfo]:

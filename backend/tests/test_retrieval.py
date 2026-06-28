@@ -2,8 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from text2sql.models import ColumnInfo, TableInfo
-from text2sql.retrieval import HybridTableRetriever, schema_fingerprint
+from text2sql.core.models import ColumnInfo, TableInfo
+from text2sql.core.retrieval import HybridTableRetriever, schema_fingerprint
 
 
 class RetrievalTests(unittest.TestCase):

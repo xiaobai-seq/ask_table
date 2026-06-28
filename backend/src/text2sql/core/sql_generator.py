@@ -10,7 +10,7 @@ import json
 import re
 from typing import Protocol
 
-from text2sql.models import ChartType, RelationshipPath, RetrievalHit, SQLPlan, TableInfo
+from text2sql.core.models import ChartType, RelationshipPath, RetrievalHit, SQLPlan, TableInfo
 
 
 SQL_GENERATION_HARD_RULES = (

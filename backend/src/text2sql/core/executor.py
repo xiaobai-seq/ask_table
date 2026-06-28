@@ -12,8 +12,8 @@ import sqlite3
 import time
 from pathlib import Path
 
-from text2sql.models import ExecutionResult, TableInfo
-from text2sql.sql_validator import SQLValidator
+from text2sql.core.models import ExecutionResult, TableInfo
+from text2sql.core.sql_validator import SQLValidator
 
 
 class QueryExecutor:

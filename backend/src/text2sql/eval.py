@@ -11,9 +11,9 @@ import asyncio
 import json
 from pathlib import Path
 
-from text2sql.graph import Text2SQLWorkflow
-from text2sql.models import EvalCase, EvalResult, to_plain
-from text2sql.sql_validator import normalize_sql
+from text2sql.core.graph import Text2SQLWorkflow
+from text2sql.core.models import EvalCase, EvalResult, to_plain
+from text2sql.core.sql_validator import normalize_sql
 
 
 class EvaluationRunner:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-from text2sql.models import TableInfo
+from text2sql.core.models import TableInfo
 
 
 # 即使 SQL 以 WITH 开头，只要包含这些关键字也直接拒绝。

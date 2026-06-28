@@ -6,7 +6,7 @@ from __future__ import annotations
 “看似合理”SQL。该模块根据召回结果、问题文本和会话上下文决定是否中断链路。
 """
 
-from text2sql.models import Clarification, RetrievalHit
+from text2sql.core.models import Clarification, RetrievalHit
 
 
 class AmbiguityDetector:

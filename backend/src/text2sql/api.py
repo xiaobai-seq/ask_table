@@ -12,8 +12,8 @@ import os
 import uuid
 from typing import AsyncIterator
 
-from text2sql.graph import Text2SQLWorkflow
-from text2sql.models import to_plain
+from text2sql.core.graph import Text2SQLWorkflow
+from text2sql.core.models import to_plain
 
 try:  # pragma: no cover - optional dependency
     from fastapi import FastAPI, HTTPException

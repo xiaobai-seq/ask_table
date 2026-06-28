@@ -10,7 +10,7 @@ import os
 from collections import deque
 from itertools import combinations
 
-from text2sql.models import ForeignKeyInfo, RelationshipPath, TableInfo
+from text2sql.core.models import ForeignKeyInfo, RelationshipPath, TableInfo
 
 
 class RelationshipResolver:
