@@ -1,36 +1,32 @@
-import { Button, Layout, Space, Typography } from "antd";
-import { PlusOutlined } from "@ant-design/icons";
+import { Layout, Typography } from "antd";
 
 import Chat from "./pages/Chat";
-import { useChatStore } from "./store/chat";
+import HistorySidebar from "./components/History/HistorySidebar";
 
-const { Header, Content } = Layout;
+const { Header, Content, Sider } = Layout;
 
 export default function App() {
-  const newSession = useChatStore((s) => s.newSession);
-
   return (
     <Layout style={{ height: "100%" }}>
       <Header
         style={{
           display: "flex",
           alignItems: "center",
-          justifyContent: "space-between",
           borderBottom: "1px solid #eef0f4",
         }}
       >
         <Typography.Title level={4} style={{ margin: 0 }}>
           Text2SQL · 智能数据问答
         </Typography.Title>
-        <Space>
-          <Button icon={<PlusOutlined />} onClick={() => newSession()}>
-            新会话
-          </Button>
-        </Space>
       </Header>
-      <Content style={{ height: "calc(100% - 64px)" }}>
-        <Chat />
-      </Content>
+      <Layout>
+        <Sider width={280} theme="light" style={{ borderRight: "1px solid #eef0f4" }}>
+          <HistorySidebar />
+        </Sider>
+        <Content style={{ height: "calc(100vh - 64px)" }}>
+          <Chat />
+        </Content>
+      </Layout>
     </Layout>
   );
 }
