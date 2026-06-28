@@ -37,6 +37,8 @@ if _HAS_PYDANTIC_SETTINGS:
 
         sql_repair_max_retries: int = 2
         rate_limit_per_minute: int = 60
+        # Redis 限流运行期异常时的策略：True=fail-open（放行，保可用性），False=fail-closed（拒绝，保后端）。
+        rate_limit_fail_open: bool = True
         cors_origins: list[str] = ["*"]
         few_shot_top_k: int = 3
         # 准确率增强资源：schema 语义元数据与 few-shot 种子库（缺失时安全降级）。
@@ -59,6 +61,7 @@ else:
             self.dashscope_llm_model = os.getenv("DASHSCOPE_LLM_MODEL", "qwen-plus")
             self.sql_repair_max_retries = int(os.getenv("TEXT2SQL_SQL_REPAIR_MAX_RETRIES", "2"))
             self.rate_limit_per_minute = int(os.getenv("TEXT2SQL_RATE_LIMIT_PER_MINUTE", "60"))
+            self.rate_limit_fail_open = os.getenv("TEXT2SQL_RATE_LIMIT_FAIL_OPEN", "1") in ("1", "true", "True")
             self.cors_origins = ["*"]
             self.few_shot_top_k = int(os.getenv("TEXT2SQL_FEW_SHOT_TOP_K", "3"))
             self.schema_metadata_path = os.getenv(

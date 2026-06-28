@@ -49,6 +49,35 @@ class InMemoryRateLimiterTests(unittest.TestCase):
         self.assertIsInstance(limiter, InMemoryRateLimiter)
 
 
+class _ExplodingScript:
+    def __call__(self, *args, **kwargs):
+        raise RuntimeError("redis down")
+
+
+class _FakeRedis:
+    def register_script(self, lua):
+        return _ExplodingScript()
+
+
+class RedisRateLimiterFailPolicyTests(unittest.TestCase):
+    """Redis 运行期异常时按 fail_open 配置放行/拒绝。"""
+
+    def test_default_setting_is_fail_open(self):
+        self.assertTrue(Settings().rate_limit_fail_open)
+
+    def test_fail_open_allows_on_error(self):
+        from text2sql.api.rate_limit import RedisRateLimiter
+
+        limiter = RedisRateLimiter(_FakeRedis(), rate_per_minute=1, fail_open=True)
+        self.assertTrue(limiter.allow("k"))
+
+    def test_fail_closed_blocks_on_error(self):
+        from text2sql.api.rate_limit import RedisRateLimiter
+
+        limiter = RedisRateLimiter(_FakeRedis(), rate_per_minute=1, fail_open=False)
+        self.assertFalse(limiter.allow("k"))
+
+
 @unittest.skipUnless(_HAS_FASTAPI, "FastAPI/TestClient not installed")
 class RateLimitMiddlewareTests(unittest.TestCase):
     def _client(self, rate: int):

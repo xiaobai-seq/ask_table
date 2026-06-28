@@ -125,5 +125,5 @@ interface RenderSpec { chart_type: ChartType; x: string | null; y: string[]; ser
   - `GET /healthz` 豁免限流。
 - 阈值取 `Settings.rate_limit_per_minute`（默认 60/分钟，令牌桶）。
 - 超过限流：HTTP 429 + 标准错误体（`code: "rate_limited"`）。
-- Redis 故障策略：限流默认接 Redis（配置 `redis_url` 时），初始化不可用时降级为进程内内存令牌桶；Redis 运行期异常时放行并告警（fail-open，优先保可用性）。
+- Redis 故障策略：限流默认接 Redis（配置 `redis_url` 时），初始化不可用时降级为进程内内存令牌桶；Redis 运行期异常时按 `Settings.rate_limit_fail_open` 处理：默认 `true`（fail-open，放行并告警，优先保可用性），置 `false` 则 fail-closed（拒绝，优先保护后端）。
 - 任何 5xx：标准错误体，前端按 `message` 提示并保留 `trace_id` 供反馈。

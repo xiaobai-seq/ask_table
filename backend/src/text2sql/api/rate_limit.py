@@ -78,12 +78,16 @@ return allowed
 
 
 class RedisRateLimiter:
-    """基于 Redis 的跨进程令牌桶。"""
+    """基于 Redis 的跨进程令牌桶。
 
-    def __init__(self, client, rate_per_minute: int) -> None:
+    fail_open 控制 Redis 运行期异常时的策略：True 放行（保可用性，默认），False 拒绝（保后端）。
+    """
+
+    def __init__(self, client, rate_per_minute: int, fail_open: bool = True) -> None:
         self.client = client
         self.capacity = float(rate_per_minute)
         self.refill_per_sec = rate_per_minute / 60.0
+        self.fail_open = fail_open
         self._script = client.register_script(_REDIS_TOKEN_BUCKET_LUA)
 
     def allow(self, key: str) -> bool:
@@ -95,24 +99,28 @@ class RedisRateLimiter:
                 args=[self.capacity, self.refill_per_sec, time.time()],
             )
             return bool(allowed)
-        except Exception as exc:  # pragma: no cover - Redis 故障时不阻断业务，放行并告警
-            logger.warning("redis rate limiter failed, allowing request: %s", exc)
-            return True
+        except Exception as exc:
+            # Redis 故障时按配置 fail-open/fail-closed，并告警便于发现底层异常。
+            logger.warning(
+                "redis rate limiter failed (fail_open=%s): %s", self.fail_open, exc
+            )
+            return self.fail_open
 
 
 def build_rate_limiter(settings) -> RateLimiter:
     """按配置构建限流器：可用 Redis 优先，否则降级内存。"""
 
     rate = settings.rate_limit_per_minute
+    fail_open = getattr(settings, "rate_limit_fail_open", True)
     redis_url = getattr(settings, "redis_url", None)
     if redis_url:
-        limiter = _try_build_redis_limiter(redis_url, rate)
+        limiter = _try_build_redis_limiter(redis_url, rate, fail_open)
         if limiter is not None:
             return limiter
     return InMemoryRateLimiter(rate)
 
 
-def _try_build_redis_limiter(redis_url: str, rate: int) -> RateLimiter | None:
+def _try_build_redis_limiter(redis_url: str, rate: int, fail_open: bool) -> RateLimiter | None:
     """尝试连接 Redis 并构建限流器；不可用时返回 None 触发降级。"""
 
     try:  # pragma: no cover - 依赖外部 Redis，离线测试不覆盖
@@ -120,7 +128,7 @@ def _try_build_redis_limiter(redis_url: str, rate: int) -> RateLimiter | None:
 
         client = redis.Redis.from_url(redis_url)
         client.ping()
-        return RedisRateLimiter(client, rate)
+        return RedisRateLimiter(client, rate, fail_open=fail_open)
     except Exception as exc:  # pragma: no cover
         logger.warning("redis unavailable, falling back to in-memory rate limiter: %s", exc)
         return None
