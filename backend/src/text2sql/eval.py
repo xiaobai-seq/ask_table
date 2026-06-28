@@ -11,6 +11,7 @@ import asyncio
 import json
 from pathlib import Path
 
+from text2sql.accuracy.few_shot import InMemoryFewShotStore
 from text2sql.accuracy.schema_semantics import SchemaSemantics
 from text2sql.config import Settings
 from text2sql.core.graph import Text2SQLWorkflow
@@ -118,7 +119,13 @@ def main() -> None:
     db = args.db if "://" in args.db else f"sqlite:///{args.db}"
     settings = Settings()
     semantics = SchemaSemantics.from_yaml(settings.schema_metadata_path)
-    workflow = Text2SQLWorkflow(database_url_or_path=db, schema_semantics=semantics)
+    few_shot_store = InMemoryFewShotStore.from_jsonl(settings.few_shot_seed_path)
+    workflow = Text2SQLWorkflow(
+        database_url_or_path=db,
+        schema_semantics=semantics,
+        few_shot_store=few_shot_store,
+        few_shot_top_k=settings.few_shot_top_k,
+    )
     cases = load_cases(args.cases)
     results = asyncio.run(EvaluationRunner(workflow).run(cases))
     write_report(args.report, results)

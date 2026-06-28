@@ -17,6 +17,7 @@ import asyncio
 from pathlib import Path
 from typing import AsyncIterator
 
+from text2sql.accuracy.few_shot import FewShotStore
 from text2sql.accuracy.schema_semantics import SchemaSemantics
 from text2sql.core.clarification import AmbiguityDetector
 from text2sql.core.context import ConversationMemory
@@ -62,6 +63,8 @@ class Text2SQLWorkflow:
         relationship_resolver: RelationshipResolver | None = None,
         llm_provider: LLMProvider | None = None,
         schema_semantics: SchemaSemantics | None = None,
+        few_shot_store: FewShotStore | None = None,
+        few_shot_top_k: int = 3,
     ) -> None:
         # schema 可以由调用方直接注入，也可以从数据库连接动态 introspect。
         # 测试里常直接传 tables；API/CLI 则通常走 database_url_or_path。
@@ -81,7 +84,12 @@ class Text2SQLWorkflow:
         self.retriever = HybridTableRetriever(tables, cache_dir=cache_dir, semantics=self.schema_semantics)
         self.relationship_resolver = relationship_resolver or default_relationship_resolver(tables)
         llm_provider = llm_provider or default_llm_provider()
-        self.sql_generator = PromptedSQLGenerator(llm_provider, semantics=self.schema_semantics)
+        self.sql_generator = PromptedSQLGenerator(
+            llm_provider,
+            semantics=self.schema_semantics,
+            few_shot_store=few_shot_store,
+            few_shot_top_k=few_shot_top_k,
+        )
         self.ambiguity_detector = AmbiguityDetector()
         self.executor = QueryExecutor(database_url_or_path, tables) if database_url_or_path else None
         self.summarizer = DataInsightSummarizer(llm_provider)

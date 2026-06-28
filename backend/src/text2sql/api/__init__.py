@@ -12,6 +12,7 @@ import logging
 import uuid
 from typing import AsyncIterator
 
+from text2sql.accuracy.few_shot import InMemoryFewShotStore
 from text2sql.accuracy.schema_semantics import SchemaSemantics
 from text2sql.api.errors import build_error, register_exception_handlers
 from text2sql.config import Settings
@@ -81,9 +82,13 @@ def create_app() -> "FastAPI":
         settings = Settings()
         # 加载 schema 语义元数据（中文别名/枚举字典），文件缺失时自动降级为空。
         semantics = SchemaSemantics.from_yaml(settings.schema_metadata_path)
+        # 加载 few-shot 种子示例库，文件缺失时自动降级为空库。
+        few_shot_store = InMemoryFewShotStore.from_jsonl(settings.few_shot_seed_path)
         workflow = Text2SQLWorkflow(
             database_url_or_path=settings.database_url,
             schema_semantics=semantics,
+            few_shot_store=few_shot_store,
+            few_shot_top_k=settings.few_shot_top_k,
         )
 
     @app.post("/query")

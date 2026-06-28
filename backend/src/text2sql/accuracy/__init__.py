@@ -4,6 +4,18 @@
 SQL 自修复等。这些能力对 core 工作流是可选增强，缺失时主链路仍能降级运行。
 """
 
+from text2sql.accuracy.few_shot import (
+    FewShotExample,
+    FewShotStore,
+    InMemoryFewShotStore,
+    format_examples_block,
+)
 from text2sql.accuracy.schema_semantics import SchemaSemantics
 
-__all__ = ["SchemaSemantics"]
+__all__ = [
+    "FewShotExample",
+    "FewShotStore",
+    "InMemoryFewShotStore",
+    "SchemaSemantics",
+    "format_examples_block",
+]

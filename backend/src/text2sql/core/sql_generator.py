@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Protocol
 from text2sql.core.models import ChartType, RelationshipPath, RetrievalHit, SQLPlan, TableInfo
 
 if TYPE_CHECKING:  # pragma: no cover - 仅类型注解使用
+    from text2sql.accuracy.few_shot import FewShotStore
     from text2sql.accuracy.schema_semantics import SchemaSemantics
 
 
@@ -38,9 +39,17 @@ class LLMProvider(Protocol):
 class DeterministicSQLGenerator:
     """规则 fallback：保证测试稳定，也展示复杂 SQL 的模板化生成方式。"""
 
-    def __init__(self, semantics: "SchemaSemantics | None" = None) -> None:
+    def __init__(
+        self,
+        semantics: "SchemaSemantics | None" = None,
+        few_shot_store: "FewShotStore | None" = None,
+        few_shot_top_k: int = 3,
+    ) -> None:
         # semantics 可选：注入枚举字典等业务语义，缺省时退化为纯结构化 prompt。
+        # few_shot_store 可选：注入「问题→SQL」示例，仅影响 LLM prompt，规则路径不受影响。
         self.semantics = semantics
+        self.few_shot_store = few_shot_store
+        self.few_shot_top_k = few_shot_top_k
 
     def build_prompt(
         self,
@@ -58,6 +67,8 @@ class DeterministicSQLGenerator:
         enum_hints = ""
         if self.semantics:
             enum_hints = self.semantics.prompt_hints([hit.table.name for hit in hits])
+        # few-shot 示例：检索与当前问题最相似的优质「问题→SQL」，引导 LLM 模仿写法。
+        few_shot_block = self._few_shot_block(query)
         return f"""你是一名严谨的企业 DBA 和数据分析工程师。
 {context_block}
 
@@ -73,11 +84,22 @@ class DeterministicSQLGenerator:
 字段枚举字典:
 {enum_hints or "无"}
 
+参考示例:
+{few_shot_block or "无"}
+
 用户问题:
 {query}
 
 请输出 JSON: {{"sql": "... or null", "chart_type": "...", "reasoning": "..."}}
 """
+
+    def _few_shot_block(self, query: str) -> str:
+        if not self.few_shot_store:
+            return ""
+        from text2sql.accuracy.few_shot import format_examples_block
+
+        examples = self.few_shot_store.search(query, self.few_shot_top_k)
+        return format_examples_block(examples)
 
     def generate(
         self,
@@ -311,8 +333,10 @@ class PromptedSQLGenerator(DeterministicSQLGenerator):
         self,
         llm_provider: LLMProvider | None = None,
         semantics: "SchemaSemantics | None" = None,
+        few_shot_store: "FewShotStore | None" = None,
+        few_shot_top_k: int = 3,
     ) -> None:
-        super().__init__(semantics)
+        super().__init__(semantics, few_shot_store, few_shot_top_k)
         self.llm_provider = llm_provider
 
     async def agenerate(
