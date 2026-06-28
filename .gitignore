@@ -7,6 +7,7 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .text2sql_cache/
+.worktrees/
 examples/*.db
 examples/*_report.json
 python/examples/*.db
