@@ -39,8 +39,6 @@ interface ChatState {
   send: (query: string) => Promise<void>;
   cancel: () => Promise<void>;
   newSession: () => void;
-  switchSession: (sessionId: string) => void;
-  loadTurns: (sessionId: string, turns: ChatTurn[]) => void;
   // 历史回看：拉取某会话历史并载入对话区。
   openSession: (sessionId: string) => Promise<void>;
   // 删除会话：若删除的是当前会话则回到一个新会话。
@@ -133,16 +131,6 @@ export const useChatStore = create<ChatState>((set, get) => {
     newSession() {
       get().controller?.abort();
       set({ sessionId: newSessionId(), turns: [], sending: false, controller: null });
-    },
-
-    switchSession(sessionId: string) {
-      get().controller?.abort();
-      set({ sessionId, turns: [], sending: false, controller: null });
-    },
-
-    loadTurns(sessionId: string, turns: ChatTurn[]) {
-      get().controller?.abort();
-      set({ sessionId, turns, sending: false, controller: null });
     },
 
     async openSession(sessionId: string) {
