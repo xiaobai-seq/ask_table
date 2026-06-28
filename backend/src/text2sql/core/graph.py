@@ -26,7 +26,6 @@ from text2sql.core.llm import LLMProvider, default_llm_provider
 from text2sql.core.models import (
     AgentState,
     Clarification,
-    ConversationTurn,
     RelationshipPath,
     RetrievalHit,
     TableInfo,
@@ -39,6 +38,7 @@ from text2sql.core.retrieval import HybridTableRetriever
 from text2sql.core.schema import load_schema
 from text2sql.core.sql_generator import PromptedSQLGenerator
 from text2sql.core.summarizer import DataInsightSummarizer
+from text2sql.persistence.repository import HistoryRecord
 
 try:  # pragma: no cover - import path differs by langgraph version
     from langgraph.graph import END, START, StateGraph
@@ -308,22 +308,32 @@ class Text2SQLWorkflow:
         if result is None or plan is None:
             return {}
         render_spec = self.chart_recommender.recommend(state["user_query"], plan, result)
-        self._remember_turn(state, render_spec.title)
+        self._remember_turn(state, render_spec)
         return {"render_spec": render_spec, "chart_type": render_spec.chart_type}
 
-    def _remember_turn(self, state: AgentState, summary: str) -> None:
-        # 成功走到渲染阶段后，把本轮问题、SQL 和表名放入 session 记忆，供追问继承。
+    def _remember_turn(self, state: AgentState, render_spec) -> None:
+        # 成功走到渲染阶段后，落库完整一轮记录：既供追问改写，也供 REST 历史回看。
         session_id = state.get("session_id", "default")
         hits: list[RetrievalHit] = state.get("retrieval_hits", [])
-        self.memory.add_turn(
-            session_id,
-            ConversationTurn(
+        result = state.get("execution_result")
+        # status 反映本轮端到端结果，便于历史列表区分成功/失败轮次。
+        status = "success" if result is not None and not result.error else "error"
+        self.memory.add_record(
+            HistoryRecord(
+                session_id=session_id,
                 user_query=state["user_query"],
                 rewritten_query=state.get("rewritten_query") or state["user_query"],
                 generated_sql=state.get("generated_sql"),
-                tables=tuple(hit.table.name for hit in hits),
-                summary=state.get("summary") or summary,
-            ),
+                tables=[hit.table.name for hit in hits],
+                summary=state.get("summary") or render_spec.title,
+                chart_type=render_spec.chart_type,
+                row_count=result.row_count if result else None,
+                elapsed_ms=result.elapsed_ms if result else None,
+                trace_id=state.get("trace_id"),
+                status=status,
+                render_spec=to_plain(render_spec),
+                execution_result=to_plain(result),
+            )
         )
 
     @staticmethod
