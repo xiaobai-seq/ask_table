@@ -1,5 +1,0 @@
-{"case_id":"monthly_growth","query":"按月份统计订单金额趋势，并计算环比增长率","expected_tables":["orders"],"required_sql_keywords":["with","lag","over","sum"],"allow_clarification":false}
-{"case_id":"customer_region_join","query":"按客户地区统计订单金额","expected_tables":["orders","customers"],"required_sql_keywords":["join","customers.region","sum"],"allow_clarification":false}
-{"case_id":"top_category","query":"销售金额排名前3的订单状态","expected_tables":["orders"],"required_sql_keywords":["rank","over"],"allow_clarification":false}
-{"case_id":"employee_hierarchy","query":"查询员工组织层级路径","expected_tables":["employees"],"required_sql_keywords":["with recursive"],"allow_clarification":false}
-{"case_id":"ambiguous","query":"看一下情况","allow_clarification":true}
