@@ -11,6 +11,7 @@ import json
 import uuid
 from typing import AsyncIterator
 
+from text2sql.api.errors import build_error, register_exception_handlers
 from text2sql.config import Settings
 from text2sql.core.graph import Text2SQLWorkflow
 from text2sql.core.models import to_plain
@@ -66,6 +67,8 @@ def create_app() -> "FastAPI":
     if FastAPI is None:  # pragma: no cover
         raise RuntimeError("FastAPI is not installed")
     app = FastAPI(title="Enterprise Text2SQL", version="0.1.0")
+    # 统一把未捕获异常收敛成 {code, message, trace_id} 结构化错误体。
+    register_exception_handlers(app)
 
     @app.on_event("startup")
     async def startup() -> None:
@@ -111,6 +114,9 @@ async def stream_query(
             if node_name == "cancelled":
                 return
         yield sse("task", {"task_id": task_id, "status": "finished"})
+    except Exception as exc:  # noqa: BLE001 - 兜底单点异常，避免整条 SSE 流直接崩溃
+        error = build_error(code="stream_error", message=str(exc))
+        yield sse("error", {"task_id": task_id, **error.to_dict()})
     finally:
         registry.finish(task_id)
 
