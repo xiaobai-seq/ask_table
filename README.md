@@ -1,15 +1,27 @@
 # Enterprise Text2SQL
 
-一个面向企业自助取数场景的 Text2SQL 后端骨架，覆盖：
+一个面向「业务人员无 SQL 能力却需自助取数」的生产级自然语言数据问答系统，前后端分离的 monorepo：
 
-- LangGraph 状态驱动工作流：schema 检索、关系分析、SQL 生成、执行、总结、渲染。
-- BM25 + 向量召回 + RRF + rerank 的三层混合表检索。
-- schema 指纹缓存与持久化向量索引。
-- Neo4j 可选图谱增强，多表 JOIN 路径解析。
-- 约束化 SQL prompt、复杂查询策略、模糊问题澄清。
-- SSE 流式响应、任务取消、评测 CLI 与样例数据。
+- **后端（`backend/`，Python + LangGraph）**：schema 检索 → 关系分析 → SQL 生成 → SQL 执行 → 数据总结 → 可视化推荐的流式工作流。
+- **前端（`frontend/`，React + TypeScript）**：对话式问答、SSE 流式节点进度、ECharts 图表渲染、历史记录回看/删除。
 
-本仓库默认可在缺少 DashScope、FAISS、Neo4j、SQLAlchemy、FastAPI 的本地环境中运行核心测试；安装依赖后会自动启用对应生产适配器。
+后端核心能力：
+
+- BM25 + 向量召回 + RRF + rerank 的三层混合表检索，schema 指纹缓存与持久化向量索引。
+- schema 语义增强（中文别名/业务描述/枚举词典）+ few-shot 示例库注入，提升中文取数准确率。
+- 约束化 SQL prompt、复杂查询策略、模糊问题澄清；执行报错/空结果时进入 `sql_repair` 自修复重试（默认 2 次）。
+- MySQL 持久化（会话/查询历史/评测结果）、会话/IP 限流（Redis 可选降级内存）、统一结构化错误与 trace。
+- SSE 流式响应、任务取消、结果级比对的评测 CLI 与样例数据。
+
+仓库结构：
+
+```
+backend/    Python 后端（src/text2sql: core/ accuracy/ persistence/ api/ config/）
+frontend/   React + TS 前端（Vite + Ant Design + ECharts + Zustand）
+docs/       设计文档、实施计划与冻结的接口契约（docs/contracts/api-contract-v1.md）
+```
+
+本仓库默认可在缺少 DashScope、FAISS、Neo4j、SQLAlchemy、FastAPI、MySQL、Redis 的本地环境中运行核心测试；安装依赖后会自动启用对应生产适配器。
 
 ## 链路速览
 
@@ -50,6 +62,16 @@ cd backend
 python3 -m text2sql.eval --db examples/demo.db --cases examples/eval_cases.jsonl --report examples/eval_report.json
 ```
 
+前端（需后端在 `localhost:8000` 运行，dev server 默认把 `/api/*` 代理到后端）：
+
+```bash
+cd frontend
+npm install
+npm run dev      # 启动开发服务器
+npm test         # 单元测试（vitest）
+npm run build    # 生产构建
+```
+
 ## API
 
 `POST /query`
@@ -61,9 +83,9 @@ python3 -m text2sql.eval --db examples/demo.db --cases examples/eval_cases.jsonl
 }
 ```
 
-响应为 SSE，事件会按节点持续返回：`schema_inspector`、`table_relationship`、`sql_generator`、`sql_executor`、`summarize`、`data_render`。
+响应为 SSE，事件会按节点持续返回：`schema_inspector`、`table_relationship`、`sql_generator`、`sql_repair`（自修复重试时出现）、`sql_executor`、`summarize`、`data_render`。
 
-`POST /cancel/{task_id}` 可取消长查询。
+`POST /cancel/{task_id}` 可取消长查询。会话与历史接口（`GET /sessions`、`GET /sessions/{id}/history`、`DELETE /sessions/{id}` 等）及完整事件结构见 `docs/contracts/api-contract-v1.md`。
 
 ## 设计重点
 
