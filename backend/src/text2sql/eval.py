@@ -161,20 +161,63 @@ def load_cases(path: str | Path) -> list[EvalCase]:
     return cases
 
 
+def summarize_results(results: list[EvalResult]) -> dict[str, Any]:
+    """汇总整体通过率与各指标均值，供报告与落库复用。"""
+
+    passed = sum(1 for result in results if result.passed)
+    return {
+        "total": len(results),
+        "passed": passed,
+        "pass_rate": passed / max(1, len(results)),
+        # 各指标的跨 case 平均值，便于结果级准确率的横向/趋势对比。
+        "metrics": aggregate_metrics(results),
+    }
+
+
 def write_report(path: str | Path, results: list[EvalResult]) -> None:
     """写出包含整体通过率和逐 case 详情的 JSON 报告。"""
 
     payload = {
-        "summary": {
-            "total": len(results),
-            "passed": sum(1 for result in results if result.passed),
-            "pass_rate": sum(1 for result in results if result.passed) / max(1, len(results)),
-            # 各指标的跨 case 平均值，便于结果级准确率的横向/趋势对比。
-            "metrics": aggregate_metrics(results),
-        },
+        "summary": summarize_results(results),
         "results": [to_plain(result) for result in results],
     }
     Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def persist_eval_run(repository, results: list[EvalResult]):
+    """把一次评测的聚合结果写入 eval_runs，返回落库记录（支持多次对比）。"""
+
+    summary = summarize_results(results)
+    return repository.record_run(
+        total=summary["total"],
+        passed=summary["passed"],
+        pass_rate=summary["pass_rate"],
+        metrics=summary["metrics"],
+    )
+
+
+def _build_eval_run_repository(settings: "Settings"):
+    """构建 eval_runs repository：可用 SQLAlchemy 则落库，否则降级内存。"""
+
+    try:
+        from text2sql.persistence.db import (
+            _HAS_SQLALCHEMY,
+            create_metadata_engine,
+            create_session_factory,
+            init_models,
+        )
+
+        if _HAS_SQLALCHEMY and settings.metadata_database_url:
+            from text2sql.persistence.repository import SqlAlchemyEvalRunRepository
+
+            engine = create_metadata_engine(settings.metadata_database_url)
+            init_models(engine)
+            return SqlAlchemyEvalRunRepository(create_session_factory(engine))
+    except Exception:  # pragma: no cover - 缺依赖/连接失败时降级
+        pass
+    from text2sql.persistence.repository import InMemoryEvalRunRepository
+
+    return InMemoryEvalRunRepository()
 
 
 def main() -> None:
@@ -200,8 +243,10 @@ def main() -> None:
     cases = load_cases(args.cases)
     results = asyncio.run(EvaluationRunner(workflow).run(cases))
     write_report(args.report, results)
+    # 评测聚合结果落 eval_runs，便于多次运行做趋势对比（缺依赖时降级内存、不报错）。
+    record = persist_eval_run(_build_eval_run_repository(settings), results)
     passed = sum(1 for result in results if result.passed)
-    print(f"pass_rate={passed}/{len(results)} report={args.report}")
+    print(f"pass_rate={passed}/{len(results)} report={args.report} eval_run_id={record.id}")
 
 
 if __name__ == "__main__":

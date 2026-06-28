@@ -48,6 +48,18 @@ class SessionSummary:
     turn_count: int
 
 
+@dataclass
+class EvalRunRecord:
+    """一次评测运行的聚合结果；多条记录支持横向/趋势对比。"""
+
+    total: int
+    passed: int
+    pass_rate: float
+    metrics: dict = field(default_factory=dict)
+    id: int | None = None
+    run_at: datetime | None = None
+
+
 class HistoryRepository(Protocol):
     """会话与历史的持久化契约。"""
 
@@ -273,3 +285,85 @@ class SqlAlchemyHistoryRepository:
             id=row.id,
             created_at=row.created_at,
         )
+
+
+class EvalRunRepository(Protocol):
+    """评测运行的持久化契约。"""
+
+    def record_run(self, total: int, passed: int, pass_rate: float, metrics: dict) -> EvalRunRecord: ...
+
+    def list_runs(self) -> list[EvalRunRecord]: ...
+
+
+class InMemoryEvalRunRepository:
+    """内存实现：供测试与缺 MySQL 时降级。"""
+
+    def __init__(self) -> None:
+        self._runs: list[EvalRunRecord] = []
+        self._id_seq = itertools.count(1)
+
+    def record_run(self, total: int, passed: int, pass_rate: float, metrics: dict) -> EvalRunRecord:
+        record = EvalRunRecord(
+            total=total,
+            passed=passed,
+            pass_rate=pass_rate,
+            metrics=dict(metrics),
+            id=next(self._id_seq),
+            run_at=datetime.utcnow(),
+        )
+        self._runs.append(record)
+        return record
+
+    def list_runs(self) -> list[EvalRunRecord]:
+        # 最近一次运行排最前，便于对比。
+        return sorted(self._runs, key=lambda r: (r.run_at, r.id), reverse=True)
+
+
+class SqlAlchemyEvalRunRepository:
+    """ORM 实现：把评测聚合结果落到 eval_runs 表。"""
+
+    def __init__(self, session_factory) -> None:
+        self._session_factory = session_factory
+
+    def record_run(self, total: int, passed: int, pass_rate: float, metrics: dict) -> EvalRunRecord:
+        from text2sql.persistence.models import EvalRun
+
+        with self._session_factory() as session:
+            row = EvalRun(
+                run_at=datetime.utcnow(),
+                total=total,
+                passed=passed,
+                pass_rate=pass_rate,
+                metrics=dict(metrics),
+            )
+            session.add(row)
+            session.commit()
+            return EvalRunRecord(
+                total=row.total,
+                passed=row.passed,
+                pass_rate=row.pass_rate,
+                metrics=row.metrics or {},
+                id=row.id,
+                run_at=row.run_at,
+            )
+
+    def list_runs(self) -> list[EvalRunRecord]:
+        from sqlalchemy import select
+
+        from text2sql.persistence.models import EvalRun
+
+        with self._session_factory() as session:
+            rows = session.execute(
+                select(EvalRun).order_by(EvalRun.run_at.desc(), EvalRun.id.desc())
+            ).scalars().all()
+            return [
+                EvalRunRecord(
+                    total=row.total,
+                    passed=row.passed,
+                    pass_rate=row.pass_rate,
+                    metrics=row.metrics or {},
+                    id=row.id,
+                    run_at=row.run_at,
+                )
+                for row in rows
+            ]

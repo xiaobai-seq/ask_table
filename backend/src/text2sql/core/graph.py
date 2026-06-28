@@ -14,6 +14,7 @@ from __future__ import annotations
 """
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -45,6 +46,8 @@ try:  # pragma: no cover - import path differs by langgraph version
 except Exception:  # pragma: no cover
     END = START = None
     StateGraph = None
+
+logger = logging.getLogger(__name__)
 
 
 class Text2SQLWorkflow:
@@ -262,6 +265,11 @@ class Text2SQLWorkflow:
             state.get("table_relationship", []),
             context,
         )
+        # 关键节点结构化日志：带 trace_id 贯穿，便于按链路回溯生成的 SQL。
+        logger.info(
+            "sql_generated",
+            extra={"trace_id": state.get("trace_id"), "chart_type": plan.chart_type},
+        )
         return {"sql_plan": plan, "generated_sql": plan.sql, "chart_type": plan.chart_type}
 
     async def execute_sql(self, state: AgentState) -> AgentState:
@@ -269,6 +277,14 @@ class Text2SQLWorkflow:
         if not self.executor:
             return {"execution_result": None, "errors": ["No database configured"]}
         result = await self.executor.execute(state.get("generated_sql"))
+        logger.info(
+            "sql_executed",
+            extra={
+                "trace_id": state.get("trace_id"),
+                "row_count": result.row_count,
+                "error": result.error,
+            },
+        )
         return {"execution_result": result}
 
     async def repair_sql(self, state: AgentState) -> AgentState:
@@ -277,6 +293,10 @@ class Text2SQLWorkflow:
         result = state.get("execution_result")
         error = result.error if result and result.error else "unknown execution error"
         session_id = state.get("session_id", "default")
+        logger.warning(
+            "sql_repair_attempt",
+            extra={"trace_id": state.get("trace_id"), "attempts": attempts, "error": error},
+        )
         plan = await self.sql_generator.aregenerate_with_error(
             state.get("generated_sql"),
             error,

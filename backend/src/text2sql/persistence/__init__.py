@@ -12,10 +12,26 @@ from text2sql.persistence.db import (
 )
 # 导入 models 以触发 ORM 表注册到 Base.metadata（缺 SQLAlchemy 时为空模块，安全）。
 from text2sql.persistence import models  # noqa: E402,F401
+from text2sql.persistence.repository import (  # noqa: E402
+    EvalRunRecord,
+    HistoryRecord,
+    InMemoryEvalRunRepository,
+    InMemoryHistoryRepository,
+    SessionSummary,
+    SqlAlchemyEvalRunRepository,
+    SqlAlchemyHistoryRepository,
+)
 
 __all__ = [
     "Base",
     "create_metadata_engine",
     "create_session_factory",
     "init_models",
+    "HistoryRecord",
+    "SessionSummary",
+    "EvalRunRecord",
+    "InMemoryHistoryRepository",
+    "SqlAlchemyHistoryRepository",
+    "InMemoryEvalRunRepository",
+    "SqlAlchemyEvalRunRepository",
 ]
