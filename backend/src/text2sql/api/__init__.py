@@ -89,6 +89,7 @@ def create_app() -> "FastAPI":
             schema_semantics=semantics,
             few_shot_store=few_shot_store,
             few_shot_top_k=settings.few_shot_top_k,
+            sql_repair_max_retries=settings.sql_repair_max_retries,
         )
 
     @app.post("/query")

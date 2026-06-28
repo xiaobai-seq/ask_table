@@ -339,6 +339,59 @@ class PromptedSQLGenerator(DeterministicSQLGenerator):
         super().__init__(semantics, few_shot_store, few_shot_top_k)
         self.llm_provider = llm_provider
 
+    def build_repair_prompt(
+        self,
+        failed_sql: str | None,
+        error: str,
+        query: str,
+        hits: list[RetrievalHit],
+        relationships: list[RelationshipPath],
+        context_block: str = "",
+    ) -> str:
+        # 在原始生成 prompt 基础上附加失败 SQL 与执行报错，引导 LLM 定向修复。
+        base = self.build_prompt(query, hits, relationships, context_block)
+        return f"""{base}
+
+上一次生成的 SQL 执行失败，请基于候选表与字段修复后重新输出（仍只输出 JSON）。
+失败 SQL:
+{failed_sql or "NULL"}
+
+执行错误:
+{error}
+"""
+
+    async def aregenerate_with_error(
+        self,
+        failed_sql: str | None,
+        error: str,
+        query: str,
+        hits: list[RetrievalHit],
+        relationships: list[RelationshipPath],
+        context_block: str = "",
+    ) -> SQLPlan:
+        """SQL 自修复：带着执行报错重新生成。无 LLM 时退化为规则生成器。"""
+
+        if not self.llm_provider:
+            # 规则生成器无法利用报错信息，返回规则计划；由工作流的重试上限兜底，避免空转。
+            return self.generate(query, hits, relationships, context_block)
+        prompt = self.build_repair_prompt(failed_sql, error, query, hits, relationships, context_block)
+        try:
+            response = await self.llm_provider.complete(prompt)
+            plan = parse_llm_sql_plan(response)
+            if plan.sql:
+                return plan
+            return self.generate(query, hits, relationships, context_block)
+        except Exception as exc:
+            fallback = self.generate(query, hits, relationships, context_block)
+            return SQLPlan(
+                fallback.sql,
+                fallback.chart_type,
+                reasoning=f"{fallback.reasoning} repair fallback because: {exc}",
+                confidence=min(fallback.confidence, 0.6),
+                advanced_features=fallback.advanced_features,
+                warnings=(*fallback.warnings, "repair_fallback"),
+            )
+
     async def agenerate(
         self,
         query: str,

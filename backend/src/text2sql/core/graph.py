@@ -65,6 +65,7 @@ class Text2SQLWorkflow:
         schema_semantics: SchemaSemantics | None = None,
         few_shot_store: FewShotStore | None = None,
         few_shot_top_k: int = 3,
+        sql_repair_max_retries: int = 2,
     ) -> None:
         # schema 可以由调用方直接注入，也可以从数据库连接动态 introspect。
         # 测试里常直接传 tables；API/CLI 则通常走 database_url_or_path。
@@ -94,6 +95,8 @@ class Text2SQLWorkflow:
         self.executor = QueryExecutor(database_url_or_path, tables) if database_url_or_path else None
         self.summarizer = DataInsightSummarizer(llm_provider)
         self.chart_recommender = ChartRecommender()
+        # SQL 自修复重试上限：执行报错时最多回 LLM 重生成的次数，默认 2（取自 settings）。
+        self.sql_repair_max_retries = sql_repair_max_retries
         self.graph = self._build_graph()
 
     def _build_graph(self):
@@ -108,6 +111,7 @@ class Text2SQLWorkflow:
         graph.add_node("table_relationship", self.table_relationship)
         graph.add_node("sql_generator", self.generate_sql)
         graph.add_node("sql_executor", self.execute_sql)
+        graph.add_node("sql_repair", self.repair_sql)
         graph.add_node("summarize", self.summarize)
         graph.add_node("data_render", self.render)
         graph.add_edge(START, "schema_inspector")
@@ -126,10 +130,26 @@ class Text2SQLWorkflow:
             lambda state: "end" if not state.get("generated_sql") else "continue",
             {"end": END, "continue": "sql_executor"},
         )
-        graph.add_edge("sql_executor", "summarize")
+        # 执行后判定：报错且未达重试上限则进入 sql_repair 自修复回环，否则继续总结。
+        graph.add_conditional_edges(
+            "sql_executor",
+            self._route_after_execution,
+            {"repair": "sql_repair", "continue": "summarize"},
+        )
+        # 修复后重新执行，形成 executor → repair → executor 的有界回环。
+        graph.add_edge("sql_repair", "sql_executor")
         graph.add_edge("summarize", "data_render")
         graph.add_edge("data_render", END)
         return graph.compile()
+
+    def _route_after_execution(self, state: AgentState) -> str:
+        """判断执行结果是否需要自修复：有错误且未超重试上限才回环。"""
+
+        result = state.get("execution_result")
+        attempts = state.get("attempts", 0)
+        if result is not None and result.error and attempts < self.sql_repair_max_retries:
+            return "repair"
+        return "continue"
 
     async def run(self, query: str, session_id: str = "default") -> AgentState:
         # run 返回最终完整状态，适合测试、评测 CLI 或一次性调用。
@@ -157,16 +177,16 @@ class Text2SQLWorkflow:
                     yield node_name, partial
             return
 
+        def _cancelled() -> bool:
+            return bool(cancel_event and cancel_event.is_set())
+
+        # 前置线性节点：召回 → 关系 → 生成；澄清或空 SQL 时提前结束。
         for node_name, node in (
             ("schema_inspector", self.schema_inspector),
             ("table_relationship", self.table_relationship),
             ("sql_generator", self.generate_sql),
-            ("sql_executor", self.execute_sql),
-            ("summarize", self.summarize),
-            ("data_render", self.render),
         ):
-            # 手动 fallback 与 LangGraph 链路保持同一顺序和同一中断语义。
-            if cancel_event and cancel_event.is_set():
+            if _cancelled():
                 yield "cancelled", {"cancelled": True}
                 return
             partial = await node(state)
@@ -174,6 +194,35 @@ class Text2SQLWorkflow:
             yield node_name, partial
             if state.get("clarification") or (node_name == "sql_generator" and not state.get("generated_sql")):
                 return
+
+        # 执行 + 自修复有界回环：与 LangGraph 的 sql_executor↔sql_repair 条件边保持同一语义。
+        while True:
+            if _cancelled():
+                yield "cancelled", {"cancelled": True}
+                return
+            partial = await self.execute_sql(state)
+            state.update(partial)
+            yield "sql_executor", partial
+            if self._route_after_execution(state) != "repair":
+                break
+            if _cancelled():
+                yield "cancelled", {"cancelled": True}
+                return
+            partial = await self.repair_sql(state)
+            state.update(partial)
+            yield "sql_repair", partial
+
+        # 后置线性节点：总结 → 渲染。
+        for node_name, node in (
+            ("summarize", self.summarize),
+            ("data_render", self.render),
+        ):
+            if _cancelled():
+                yield "cancelled", {"cancelled": True}
+                return
+            partial = await node(state)
+            state.update(partial)
+            yield node_name, partial
 
     async def schema_inspector(self, state: AgentState) -> AgentState:
         # 入口节点：结合会话历史改写问题，再用混合召回找到最可能相关的表。
@@ -221,6 +270,28 @@ class Text2SQLWorkflow:
             return {"execution_result": None, "errors": ["No database configured"]}
         result = await self.executor.execute(state.get("generated_sql"))
         return {"execution_result": result}
+
+    async def repair_sql(self, state: AgentState) -> AgentState:
+        # 自修复节点：带着上一次执行报错回 LLM 重生成 SQL，attempts 记录已重试次数。
+        attempts = state.get("attempts", 0) + 1
+        result = state.get("execution_result")
+        error = result.error if result and result.error else "unknown execution error"
+        session_id = state.get("session_id", "default")
+        plan = await self.sql_generator.aregenerate_with_error(
+            state.get("generated_sql"),
+            error,
+            state.get("rewritten_query") or state["user_query"],
+            state.get("retrieval_hits", []),
+            state.get("table_relationship", []),
+            self.memory.build_context_block(session_id),
+        )
+        # 透出字段与契约一致：attempts / generated_sql / sql_plan（chart_type 一并刷新）。
+        return {
+            "attempts": attempts,
+            "sql_plan": plan,
+            "generated_sql": plan.sql,
+            "chart_type": plan.chart_type,
+        }
 
     async def summarize(self, state: AgentState) -> AgentState:
         # 总结阶段只依赖执行结果；无数据库时保留已生成 SQL，给调用方自行执行。

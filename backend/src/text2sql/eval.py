@@ -125,6 +125,7 @@ def main() -> None:
         schema_semantics=semantics,
         few_shot_store=few_shot_store,
         few_shot_top_k=settings.few_shot_top_k,
+        sql_repair_max_retries=settings.sql_repair_max_retries,
     )
     cases = load_cases(args.cases)
     results = asyncio.run(EvaluationRunner(workflow).run(cases))
