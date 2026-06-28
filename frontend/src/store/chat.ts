@@ -113,13 +113,19 @@ export const useChatStore = create<ChatState>((set, get) => {
       const { controller, turns } = get();
       // 找到当前正在流式处理的 turn。
       const streaming = [...turns].reverse().find((t) => t.status === "streaming");
-      if (streaming?.taskId) {
-        try {
-          await cancelTask(streaming.taskId);
-        } catch {
-          // 取消接口失败不阻断：本地仍中止流并置为 cancelled。
+      if (streaming) {
+        if (streaming.taskId) {
+          try {
+            await cancelTask(streaming.taskId);
+          } catch {
+            // 取消接口失败不阻断：本地仍中止流并归约为 cancelled。
+          }
         }
-        patchTurn(streaming.id, (t) => ({ ...t, status: "cancelled" }));
+        // 与 SSE cancelled 走同一条事件归约路径，保证进度条与 turn 状态一致。
+        applyEvent(streaming.id, {
+          type: "cancelled",
+          payload: { task_id: streaming.taskId ?? undefined, cancelled: true },
+        });
       }
       controller?.abort();
     },

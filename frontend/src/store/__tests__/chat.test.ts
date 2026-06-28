@@ -95,7 +95,42 @@ describe("useChatStore.cancel", () => {
     await sendPromise;
 
     expect(cancelTaskMock).toHaveBeenCalledTimes(1);
-    expect(useChatStore.getState().turns[0].status).toBe("cancelled");
+    const turn = useChatStore.getState().turns[0];
+    expect(turn.status).toBe("cancelled");
+    // 取消必须经过事件归约：进度条与 turn 状态一致，不再残留运行中节点。
+    expect(turn.progress.overall).toBe("cancelled");
+    expect(turn.progress.activeNode).toBeNull();
+    expect(turn.progress.nodes.some((n) => n.status === "active")).toBe(false);
+  });
+
+  it("手动取消与 SSE cancelled 收敛到同一进度归约结果", async () => {
+    // 路径 A：手动 cancel()。
+    streamQueryMock.mockImplementation(
+      (_req: QueryRequest, opts: StreamQueryOptions) =>
+        new Promise<void>((resolve) => {
+          opts.onTask?.({ task_id: "t", status: "started" });
+          opts.signal?.addEventListener("abort", () => resolve());
+        }),
+    );
+    cancelTaskMock.mockResolvedValue({ task_id: "x", cancelled: true });
+    const p = useChatStore.getState().send("q");
+    await Promise.resolve();
+    await useChatStore.getState().cancel();
+    await p;
+    const manual = useChatStore.getState().turns[0].progress;
+
+    // 路径 B：后端直接下发 SSE cancelled 事件。
+    useChatStore.setState({ turns: [], sending: false, controller: null });
+    streamQueryMock.mockImplementation((_req: QueryRequest, opts: StreamQueryOptions) => {
+      opts.onTask?.({ task_id: "t", status: "started" });
+      opts.onCancelled?.({ task_id: "t", cancelled: true });
+      return Promise.resolve();
+    });
+    await useChatStore.getState().send("q");
+    const sse = useChatStore.getState().turns[0].progress;
+
+    expect(manual.overall).toBe(sse.overall);
+    expect(manual.nodes.map((n) => n.status)).toEqual(sse.nodes.map((n) => n.status));
   });
 });
 
