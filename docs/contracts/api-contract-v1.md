@@ -103,6 +103,8 @@ interface RenderSpec { chart_type: ChartType; x: string | null; y: string[]; ser
 
 ### `DELETE /history/{id}`（可选）
 删除单条历史：`{ "id": number, "deleted": true }`；未找到 404。
+- 仅删除该条记录；即使会话因此清空也**保留会话元信息**（`turn_count` 归零、`title` 保留），会话仍出现在 `GET /sessions` 中。
+- 如需清空并移除整个会话，请使用 `DELETE /sessions/{id}`。
 
 ### `GET /healthz`
 健康检查：`{ "status": "ok" }`（200）。
@@ -117,5 +119,11 @@ interface RenderSpec { chart_type: ChartType; x: string | null; y: string[]; ser
 ---
 
 ## 5. 限流与错误
+- 限流维度：
+  - `POST /query` 按 **`session_id`（请求 body）** 维度限流，确保多会话相互独立、同一 IP 不会互相挤占配额；
+  - 其它端点按**客户端 IP** 维度限流；
+  - `GET /healthz` 豁免限流。
+- 阈值取 `Settings.rate_limit_per_minute`（默认 60/分钟，令牌桶）。
 - 超过限流：HTTP 429 + 标准错误体（`code: "rate_limited"`）。
+- Redis 故障策略：限流默认接 Redis（配置 `redis_url` 时），初始化不可用时降级为进程内内存令牌桶；Redis 运行期异常时放行并告警（fail-open，优先保可用性）。
 - 任何 5xx：标准错误体，前端按 `message` 提示并保留 `trace_id` 供反馈。

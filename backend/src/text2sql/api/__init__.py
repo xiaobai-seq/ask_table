@@ -29,11 +29,12 @@ from text2sql.persistence.repository import (
 try:  # pragma: no cover - optional dependency
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import StreamingResponse
+    from fastapi.responses import JSONResponse, StreamingResponse
     from pydantic import BaseModel
 except Exception:  # pragma: no cover
     FastAPI = None
     StreamingResponse = None
+    JSONResponse = None
     CORSMiddleware = None
     HTTPException = Exception
     Request = object
@@ -151,9 +152,17 @@ def create_app() -> "FastAPI":
     settings = Settings()
     # 统一把未捕获异常收敛成 {code, message, trace_id} 结构化错误体。
     register_exception_handlers(app)
-    # 限流中间件：阈值取 settings；配置可用 Redis 用 Redis，否则降级内存令牌桶。
+    # 限流器只构建一次，挂到 app.state 供中间件与 /query 路由共享同一份令牌桶。
+    rate_limiter = build_rate_limiter(settings)
+    app.state.rate_limiter = rate_limiter
+    # 限流中间件按 IP 限其它端点；/query 因 session_id 在 body，改由路由层按 session 限流，
+    # 故这里豁免 /query，避免在中间件里消费 body 流（详见 /query 路由）。
     if RateLimitMiddleware is not None:
-        app.add_middleware(RateLimitMiddleware, limiter=build_rate_limiter(settings))
+        app.add_middleware(
+            RateLimitMiddleware,
+            limiter=rate_limiter,
+            exempt_paths=("/healthz", "/query"),
+        )
     # CORS 放在最外层（在限流之后注册），确保 429 等响应也带跨域头。
     if CORSMiddleware is not None:
         app.add_middleware(
@@ -188,12 +197,17 @@ def create_app() -> "FastAPI":
         )
 
     @app.post("/query")
-    async def query(request: QueryRequest):
+    async def query(payload: QueryRequest, request: Request):
+        # 路由层按 session_id 限流：此时 body 已被解析，无需在中间件里消费请求流。
+        limiter = getattr(request.app.state, "rate_limiter", None)
+        if limiter is not None and not limiter.allow(f"session:{payload.session_id}"):
+            error = build_error("rate_limited", "Too many requests")
+            return JSONResponse(status_code=429, content=error.to_dict())
         if workflow is None:
             raise HTTPException(status_code=503, detail="Workflow is not initialized")
-        task_id, cancel_event = registry.create(request.task_id)
+        task_id, cancel_event = registry.create(payload.task_id)
         return StreamingResponse(
-            stream_query(workflow, request.query, request.session_id, task_id, cancel_event),
+            stream_query(workflow, payload.query, payload.session_id, task_id, cancel_event),
             media_type="text/event-stream",
             headers={"X-Task-ID": task_id},
         )

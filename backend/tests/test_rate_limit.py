@@ -85,5 +85,34 @@ class RateLimitMiddlewareTests(unittest.TestCase):
             self.assertEqual(client.get("/healthz").status_code, 200)
 
 
+@unittest.skipUnless(_HAS_FASTAPI, "FastAPI/TestClient not installed")
+class QueryEndpointRateLimitTests(unittest.TestCase):
+    """POST /query 必须按 session_id（body）限流，而非退化为按 IP。"""
+
+    def _client(self, rate: int):
+        import text2sql.api as api_module
+
+        app = api_module.create_app()
+        # 注入固定时钟限流器；不使用 with，避免触发 startup。
+        app.state.rate_limiter = InMemoryRateLimiter(rate, time_func=lambda: 0.0)
+        return TestClient(app)
+
+    def test_query_limited_per_session_not_per_ip(self):
+        client = self._client(rate=2)
+        # 同一 IP、session "a"：配额内不应 429（workflow 未初始化会返回 503，但绝非 429）。
+        for _ in range(2):
+            response = client.post("/query", json={"query": "q", "session_id": "a"})
+            self.assertNotEqual(response.status_code, 429)
+        # session "a" 超过配额 → 429 + 标准错误体。
+        blocked = client.post("/query", json={"query": "q", "session_id": "a"})
+        self.assertEqual(blocked.status_code, 429)
+        body = blocked.json()
+        self.assertEqual(body["code"], "rate_limited")
+        self.assertEqual(set(body), {"code", "message", "trace_id"})
+        # 同一 IP、不同 session "b"：配额独立计数，不应被 a 的用量影响。
+        other = client.post("/query", json={"query": "q", "session_id": "b"})
+        self.assertNotEqual(other.status_code, 429)
+
+
 if __name__ == "__main__":
     unittest.main()
