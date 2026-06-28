@@ -3,10 +3,21 @@
 
 import { create } from "zustand";
 
-import { cancelTask } from "../api/rest";
+import {
+  cancelTask,
+  deleteSession as deleteSessionApi,
+  getHistoryDetail,
+  getSessionHistory,
+} from "../api/rest";
 import { streamQuery } from "../api/sse";
 import type { SSEEvent } from "../api/types";
-import { applyEventToTurn, createTurn, type ChatTurn } from "./turn";
+import {
+  applyEventToTurn,
+  createTurn,
+  enrichTurnWithDetail,
+  historyTurnToChatTurn,
+  type ChatTurn,
+} from "./turn";
 
 // 生成本地唯一 id（task_id 前端自带，便于在收到响应头前就能取消）。
 function genId(prefix: string): string {
@@ -30,6 +41,10 @@ interface ChatState {
   newSession: () => void;
   switchSession: (sessionId: string) => void;
   loadTurns: (sessionId: string, turns: ChatTurn[]) => void;
+  // 历史回看：拉取某会话历史并载入对话区。
+  openSession: (sessionId: string) => Promise<void>;
+  // 删除会话：若删除的是当前会话则回到一个新会话。
+  removeSession: (sessionId: string) => Promise<void>;
 }
 
 export const useChatStore = create<ChatState>((set, get) => {
@@ -122,6 +137,32 @@ export const useChatStore = create<ChatState>((set, get) => {
     loadTurns(sessionId: string, turns: ChatTurn[]) {
       get().controller?.abort();
       set({ sessionId, turns, sending: false, controller: null });
+    },
+
+    async openSession(sessionId: string) {
+      const resp = await getSessionHistory(sessionId);
+      const turns = resp.history.map(historyTurnToChatTurn);
+      // 先载入列表（含 query/SQL/摘要），保证回看即时可见。
+      get().controller?.abort();
+      set({ sessionId, turns, sending: false, controller: null });
+
+      // 再并发补全各轮详情（render_spec / execution_result）以重绘图表；
+      // 单条详情失败不影响整体回看，期间若已切换会话则放弃本次结果。
+      const details = await Promise.all(
+        resp.history.map((h) => getHistoryDetail(h.id).catch(() => null)),
+      );
+      const enriched = turns.map((t, i) => (details[i] ? enrichTurnWithDetail(t, details[i]!) : t));
+      set((state) => (state.sessionId === sessionId ? { turns: enriched } : {}));
+    },
+
+    async removeSession(sessionId: string) {
+      await deleteSessionApi(sessionId);
+      // 删除当前会话则切到全新会话；否则仅触发历史刷新。
+      if (get().sessionId === sessionId) {
+        get().newSession();
+      } else {
+        set((state) => ({ historyVersion: state.historyVersion + 1 }));
+      }
     },
   };
 });

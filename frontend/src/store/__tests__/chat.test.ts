@@ -2,15 +2,21 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 import type { StreamQueryOptions, QueryRequest } from "../../api/sse";
 
-// mock 网络层：用受控的 streamQuery 模拟 SSE 回放。
+// mock 网络层：用受控的 streamQuery 模拟 SSE 回放，REST 用 spy。
 const streamQueryMock = vi.fn();
 const cancelTaskMock = vi.fn();
+const getSessionHistoryMock = vi.fn();
+const getHistoryDetailMock = vi.fn();
+const deleteSessionMock = vi.fn();
 
 vi.mock("../../api/sse", () => ({
   streamQuery: (req: QueryRequest, opts: StreamQueryOptions) => streamQueryMock(req, opts),
 }));
 vi.mock("../../api/rest", () => ({
   cancelTask: (taskId: string) => cancelTaskMock(taskId),
+  getSessionHistory: (sessionId: string) => getSessionHistoryMock(sessionId),
+  getHistoryDetail: (id: number) => getHistoryDetailMock(id),
+  deleteSession: (sessionId: string) => deleteSessionMock(sessionId),
 }));
 
 import { useChatStore } from "../chat";
@@ -19,6 +25,9 @@ import { useChatStore } from "../chat";
 beforeEach(() => {
   streamQueryMock.mockReset();
   cancelTaskMock.mockReset();
+  getSessionHistoryMock.mockReset();
+  getHistoryDetailMock.mockReset();
+  deleteSessionMock.mockReset();
   useChatStore.setState({ turns: [], sending: false, controller: null, historyVersion: 0 });
 });
 
@@ -97,5 +106,76 @@ describe("会话切换", () => {
     useChatStore.getState().newSession();
     expect(useChatStore.getState().turns).toHaveLength(0);
     expect(useChatStore.getState().sessionId).not.toBe(old);
+  });
+});
+
+describe("历史回看 openSession / removeSession", () => {
+  const historyTurn = {
+    id: 7,
+    user_query: "按月统计金额",
+    rewritten_query: "各月金额",
+    generated_sql: "SELECT 1",
+    tables: ["orders"],
+    summary: "上升",
+    chart_type: "line",
+    row_count: 1,
+    elapsed_ms: 2,
+    trace_id: "tr",
+    status: "success",
+    created_at: "2026-06-28T00:00:00Z",
+  };
+
+  it("openSession 载入历史并用详情补全执行结果", async () => {
+    getSessionHistoryMock.mockResolvedValue({ session_id: "s9", history: [historyTurn] });
+    getHistoryDetailMock.mockResolvedValue({
+      id: 7,
+      session_id: "s9",
+      user_query: "按月统计金额",
+      generated_sql: "SELECT 1",
+      summary: "上升",
+      chart_type: "line",
+      render_spec: { chart_type: "line", x: "m", y: ["v"], series: null, title: "t", options: {} },
+      execution_result: { columns: ["m", "v"], rows: [{ m: "1月", v: 9 }], row_count: 1, elapsed_ms: 2, error: null },
+      created_at: "2026-06-28T00:00:00Z",
+    });
+
+    await useChatStore.getState().openSession("s9");
+
+    const { sessionId, turns } = useChatStore.getState();
+    expect(sessionId).toBe("s9");
+    expect(turns).toHaveLength(1);
+    expect(turns[0].query).toBe("按月统计金额");
+    expect(turns[0].result.executionResult?.row_count).toBe(1);
+    expect(turns[0].result.renderSpec?.x).toBe("m");
+  });
+
+  it("openSession 中单条详情失败不影响列表回看", async () => {
+    getSessionHistoryMock.mockResolvedValue({ session_id: "s9", history: [historyTurn] });
+    getHistoryDetailMock.mockRejectedValue(new Error("404"));
+
+    await useChatStore.getState().openSession("s9");
+
+    const { turns } = useChatStore.getState();
+    expect(turns).toHaveLength(1);
+    expect(turns[0].result.generatedSql).toBe("SELECT 1"); // 列表字段仍在
+    expect(turns[0].result.executionResult).toBeNull(); // 详情失败，无法重绘
+  });
+
+  it("removeSession 删除当前会话则切到新会话", async () => {
+    deleteSessionMock.mockResolvedValue({ session_id: "cur", deleted: true });
+    const current = useChatStore.getState().sessionId;
+    await useChatStore.getState().removeSession(current);
+    expect(deleteSessionMock).toHaveBeenCalledWith(current);
+    expect(useChatStore.getState().sessionId).not.toBe(current);
+    expect(useChatStore.getState().turns).toHaveLength(0);
+  });
+
+  it("removeSession 删除非当前会话仅触发历史刷新", async () => {
+    deleteSessionMock.mockResolvedValue({ session_id: "other", deleted: true });
+    const before = useChatStore.getState().historyVersion;
+    const current = useChatStore.getState().sessionId;
+    await useChatStore.getState().removeSession("other");
+    expect(useChatStore.getState().sessionId).toBe(current);
+    expect(useChatStore.getState().historyVersion).toBe(before + 1);
   });
 });

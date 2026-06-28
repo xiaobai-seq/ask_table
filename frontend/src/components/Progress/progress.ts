@@ -56,6 +56,19 @@ export function initialProgressState(): ProgressState {
   };
 }
 
+// 历史回看用的「已完成」进度：除可选的 sql_repair 标记为跳过外，其余节点均为完成。
+export function completedProgressState(): ProgressState {
+  return {
+    nodes: NODE_SEQUENCE.map((node) => ({
+      node,
+      status: (node === "sql_repair" ? "skipped" : "done") as NodeStatus,
+    })),
+    overall: "finished",
+    activeNode: null,
+    error: null,
+  };
+}
+
 // 不可变地更新某个节点的状态。
 function patchNode(nodes: NodeProgress[], node: NodeName, patch: Partial<NodeProgress>): NodeProgress[] {
   return nodes.map((n) => (n.node === node ? { ...n, ...patch } : n));

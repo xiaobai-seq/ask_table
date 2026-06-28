@@ -1,7 +1,13 @@
 import { describe, it, expect } from "vitest";
 
-import { createTurn, applyEventToTurn, applyEventsToTurn } from "../turn";
-import type { SSEEvent, NodeName } from "../../api/types";
+import {
+  createTurn,
+  applyEventToTurn,
+  applyEventsToTurn,
+  historyTurnToChatTurn,
+  enrichTurnWithDetail,
+} from "../turn";
+import type { SSEEvent, NodeName, HistoryTurn, HistoryDetail } from "../../api/types";
 
 function nodeEvent<N extends NodeName>(node: N, data: unknown): SSEEvent {
   return { type: node, payload: { task_id: "t1", node, data } } as SSEEvent;
@@ -90,5 +96,53 @@ describe("applyEventToTurn 澄清 / 取消 / 错误", () => {
       payload: { task_id: "t1", cancelled: true },
     });
     expect(t.status).toBe("cancelled");
+  });
+});
+
+describe("历史回看转换", () => {
+  const historyTurn: HistoryTurn = {
+    id: 42,
+    user_query: "按月统计金额",
+    rewritten_query: "2026 年各月订单金额",
+    generated_sql: "SELECT month, amount FROM orders",
+    tables: ["orders"],
+    summary: "金额逐月上升",
+    chart_type: "line",
+    row_count: 12,
+    elapsed_ms: 34.5,
+    trace_id: "tr",
+    status: "success",
+    created_at: "2026-06-28T00:00:00Z",
+  };
+
+  it("historyTurnToChatTurn：转为已完成态并带上可见字段", () => {
+    const t = historyTurnToChatTurn(historyTurn);
+    expect(t.id).toBe("history-42");
+    expect(t.status).toBe("finished");
+    expect(t.progress.overall).toBe("finished");
+    expect(t.result.rewrittenQuery).toBe("2026 年各月订单金额");
+    expect(t.result.generatedSql).toBe("SELECT month, amount FROM orders");
+    expect(t.result.chartType).toBe("line");
+    // 列表接口不含执行结果 / 渲染规格。
+    expect(t.result.executionResult).toBeNull();
+    expect(t.result.renderSpec).toBeNull();
+  });
+
+  it("enrichTurnWithDetail：用详情补全 render_spec / execution_result 以重绘", () => {
+    const base = historyTurnToChatTurn(historyTurn);
+    const detail: HistoryDetail = {
+      id: 42,
+      session_id: "s1",
+      user_query: "按月统计金额",
+      generated_sql: "SELECT month, amount FROM orders",
+      summary: "金额逐月上升",
+      chart_type: "line",
+      render_spec: { chart_type: "line", x: "month", y: ["amount"], series: null, title: "月度金额", options: {} },
+      execution_result: { columns: ["month", "amount"], rows: [{ month: "1月", amount: 1 }], row_count: 1, elapsed_ms: 2, error: null },
+      created_at: "2026-06-28T00:00:00Z",
+    };
+    const enriched = enrichTurnWithDetail(base, detail);
+    expect(enriched.result.renderSpec?.x).toBe("month");
+    expect(enriched.result.executionResult?.row_count).toBe(1);
   });
 });

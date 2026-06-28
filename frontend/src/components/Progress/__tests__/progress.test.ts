@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 
 import {
   initialProgressState,
+  completedProgressState,
   reduceProgress,
   reduceProgressAll,
   NODE_LABELS,
@@ -34,6 +35,16 @@ describe("initialProgressState", () => {
     for (const n of s.nodes) {
       expect(NODE_LABELS[n.node]).toBeTruthy();
     }
+  });
+});
+
+describe("completedProgressState", () => {
+  it("整体 finished，repair 跳过，其余完成（用于历史回看）", () => {
+    const s = completedProgressState();
+    expect(s.overall).toBe("finished");
+    expect(s.activeNode).toBeNull();
+    expect(s.nodes.find((n) => n.node === "sql_repair")!.status).toBe("skipped");
+    expect(s.nodes.filter((n) => n.node !== "sql_repair").every((n) => n.status === "done")).toBe(true);
   });
 });
 

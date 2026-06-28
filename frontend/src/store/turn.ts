@@ -2,6 +2,7 @@
 // 一个 turn = 用户一次提问 + 助手随 SSE 累积出来的进度/结果/澄清/错误。
 
 import {
+  completedProgressState,
   initialProgressState,
   reduceProgress,
   type ProgressState,
@@ -11,6 +12,8 @@ import type {
   ChartType,
   Clarification,
   ExecutionResult,
+  HistoryDetail,
+  HistoryTurn,
   RenderSpec,
   SSEEvent,
 } from "../api/types";
@@ -116,4 +119,40 @@ export function applyEventToTurn(turn: ChatTurn, event: SSEEvent): ChatTurn {
 
 export function applyEventsToTurn(turn: ChatTurn, events: SSEEvent[]): ChatTurn {
   return events.reduce(applyEventToTurn, turn);
+}
+
+// 历史回看：把后端历史轮次转成 ChatTurn（已完成态）。
+// 列表接口不含 render_spec / execution_result，详情可由 GET /history/{id} 补充后合并。
+export function historyTurnToChatTurn(h: HistoryTurn): ChatTurn {
+  return {
+    id: `history-${h.id}`,
+    query: h.user_query,
+    taskId: null,
+    status: "finished",
+    progress: completedProgressState(),
+    result: {
+      rewrittenQuery: h.rewritten_query,
+      generatedSql: h.generated_sql,
+      chartType: h.chart_type,
+      summary: h.summary,
+      executionResult: null,
+      renderSpec: null,
+    },
+    error: null,
+  };
+}
+
+// 用历史详情（含 render_spec / execution_result）丰富某个回看轮次，以便重绘图表。
+export function enrichTurnWithDetail(turn: ChatTurn, detail: HistoryDetail): ChatTurn {
+  return {
+    ...turn,
+    result: {
+      ...turn.result,
+      generatedSql: detail.generated_sql ?? turn.result.generatedSql,
+      summary: detail.summary ?? turn.result.summary,
+      chartType: detail.chart_type ?? turn.result.chartType,
+      renderSpec: detail.render_spec ?? turn.result.renderSpec ?? null,
+      executionResult: detail.execution_result ?? turn.result.executionResult ?? null,
+    },
+  };
 }
