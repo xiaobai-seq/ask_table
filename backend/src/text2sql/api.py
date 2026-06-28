@@ -8,10 +8,10 @@ API 层不做 Text2SQL 业务决策，只负责创建工作流、管理取消信
 
 import asyncio
 import json
-import os
 import uuid
 from typing import AsyncIterator
 
+from text2sql.config import Settings
 from text2sql.core.graph import Text2SQLWorkflow
 from text2sql.core.models import to_plain
 
@@ -71,8 +71,8 @@ def create_app() -> "FastAPI":
     async def startup() -> None:
         global workflow
         # 默认指向样例库；生产环境通过 TEXT2SQL_DATABASE_URL 接真实数据源。
-        database_url = os.getenv("TEXT2SQL_DATABASE_URL", "sqlite:///./examples/demo.db")
-        workflow = Text2SQLWorkflow(database_url_or_path=database_url)
+        settings = Settings()
+        workflow = Text2SQLWorkflow(database_url_or_path=settings.database_url)
 
     @app.post("/query")
     async def query(request: QueryRequest):
