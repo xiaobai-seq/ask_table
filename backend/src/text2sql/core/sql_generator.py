@@ -469,7 +469,8 @@ def pick_query_dimension(query: str, table: TableInfo):
     if "城市" in query:
         candidates.append("city")
     if any(word in query for word in ("客户", "用户")):
-        candidates.extend(["customer_name", "user_name", "name"])
+        # 不加裸 "name"：否则会误命中 products.product_name，把“按客户地区”查询拼到商品维表。
+        candidates.extend(["customer_name", "user_name"])
     if any(word in query for word in ("商品", "品类", "类别")):
         candidates.extend(["category", "product_name", "name"])
     for wanted in candidates:

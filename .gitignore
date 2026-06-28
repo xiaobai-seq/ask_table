@@ -12,3 +12,5 @@ examples/*.db
 examples/*_report.json
 python/examples/*.db
 python/examples/*_report.json
+backend/examples/*.db
+backend/examples/*_report.json

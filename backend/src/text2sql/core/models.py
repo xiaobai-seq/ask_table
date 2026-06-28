@@ -197,6 +197,8 @@ class EvalCase:
     expected_tables: tuple[str, ...] = ()
     required_sql_keywords: tuple[str, ...] = ()
     allow_clarification: bool = False
+    # 期望结果集（每行一个 dict）；提供时评测会做执行结果级比对（行/列/值）。
+    expected_result: tuple[dict[str, Any], ...] | None = None
 
 
 @dataclass(frozen=True)
