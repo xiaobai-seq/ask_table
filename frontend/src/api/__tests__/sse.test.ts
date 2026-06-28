@@ -103,6 +103,40 @@ describe("SSEParser", () => {
     expect(events).toHaveLength(1);
     expect(events[0].type).toBe("task");
   });
+
+  it("flush 解析无尾部空行的末条事件", () => {
+    const parser = new SSEParser();
+    // 末条事件缺少结尾的 \n\n：push 阶段无法切分而被缓冲。
+    const noTrailing = `event: task\ndata: ${JSON.stringify({ task_id: "t1", status: "finished" })}`;
+    expect(parser.push(noTrailing)).toHaveLength(0);
+    // flush 收尾时应能解析出缓冲区里的最后一条事件。
+    const flushed = parser.flush();
+    expect(flushed).toHaveLength(1);
+    expect(flushed[0]).toEqual({
+      type: "task",
+      payload: { task_id: "t1", status: "finished" },
+    });
+  });
+
+  it("flush 空缓冲返回空数组", () => {
+    expect(new SSEParser().flush()).toEqual([]);
+  });
+
+  it("非法 JSON 的事件被跳过且不影响后续事件", () => {
+    const parser = new SSEParser();
+    // data 不是合法 JSON：该事件被跳过而非抛异常。
+    expect(parser.push(`event: task\ndata: {not valid json}\n\n`)).toHaveLength(0);
+    // 后续合法事件仍能正常解析。
+    const more = parser.push(frame("task", { task_id: "t1", status: "finished" }));
+    expect(more).toHaveLength(1);
+    expect(more[0].type).toBe("task");
+  });
+
+  it("flush 遇到非法 JSON 也安全返回空数组", () => {
+    const parser = new SSEParser();
+    parser.push(`event: task\ndata: {broken`);
+    expect(parser.flush()).toEqual([]);
+  });
 });
 
 describe("dispatchEvents", () => {
