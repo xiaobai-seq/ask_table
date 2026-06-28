@@ -8,6 +8,7 @@ API 层不做 Text2SQL 业务决策，只负责创建工作流、管理取消信
 
 import asyncio
 import json
+import logging
 import uuid
 from typing import AsyncIterator
 
@@ -25,6 +26,8 @@ except Exception:  # pragma: no cover
     StreamingResponse = None
     HTTPException = Exception
     BaseModel = object
+
+logger = logging.getLogger(__name__)
 
 
 class QueryRequest(BaseModel):  # type: ignore[misc]
@@ -115,7 +118,11 @@ async def stream_query(
                 return
         yield sse("task", {"task_id": task_id, "status": "finished"})
     except Exception as exc:  # noqa: BLE001 - 兜底单点异常，避免整条 SSE 流直接崩溃
-        error = build_error(code="stream_error", message=str(exc))
+        # 对外只回通用安全文案，异常细节仅记录到服务端日志（带同一 trace_id 便于关联）。
+        error = build_error(code="stream_error", message="Internal server error")
+        logger.error(
+            "unhandled error in SSE stream", exc_info=exc, extra={"trace_id": error.trace_id}
+        )
         yield sse("error", {"task_id": task_id, **error.to_dict()})
     finally:
         registry.finish(task_id)
