@@ -13,7 +13,7 @@
 
 ## 链路速览
 
-一次查询的主链路在 `src/text2sql/graph.py` 的 `Text2SQLWorkflow` 中编排：
+一次查询的主链路在 `backend/src/text2sql/graph.py` 的 `Text2SQLWorkflow` 中编排：
 
 1. `schema_inspector`：用 `ConversationMemory` 改写追问，并通过 `HybridTableRetriever` 检索候选表。
 2. `table_relationship`：用外键图或 Neo4j 解析候选表之间的 JOIN 路径。
@@ -22,18 +22,22 @@
 5. `summarize`：把执行结果转成业务摘要，LLM 不可用时用本地统计兜底。
 6. `data_render`：根据 SQL 计划和结果字段推荐图表类型，并把本轮结果写入会话记忆。
 
-API 层位于 `src/text2sql/api.py`，只负责把上述节点的增量状态包装成 SSE 事件。
+API 层位于 `backend/src/text2sql/api.py`，只负责把上述节点的增量状态包装成 SSE 事件。
 
 ## 快速开始
 
+后端代码位于 `backend/`，以下命令均在该目录下执行：
+
 ```bash
-python3 -m text2sql.sample_data --output examples/demo.db
-python3 -m unittest discover -s tests
+cd backend
+PYTHONPATH=src python3 -m text2sql.sample_data --output examples/demo.db
+PYTHONPATH=src python3 -m unittest discover -s tests
 ```
 
 安装依赖并启动 API：
 
 ```bash
+cd backend
 python3 -m pip install -e .
 python3 -m text2sql.sample_data --output examples/demo.db
 uvicorn text2sql.api:app --reload
@@ -42,6 +46,7 @@ uvicorn text2sql.api:app --reload
 评测：
 
 ```bash
+cd backend
 python3 -m text2sql.eval --db examples/demo.db --cases examples/eval_cases.jsonl --report examples/eval_report.json
 ```
 
