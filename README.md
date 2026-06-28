@@ -22,7 +22,7 @@
 5. `summarize`：把执行结果转成业务摘要，LLM 不可用时用本地统计兜底。
 6. `data_render`：根据 SQL 计划和结果字段推荐图表类型，并把本轮结果写入会话记忆。
 
-API 层位于 `backend/src/text2sql/api.py`，只负责把上述节点的增量状态包装成 SSE 事件。
+API 层位于 `backend/src/text2sql/api/`（`text2sql.api` 包），只负责把上述节点的增量状态包装成 SSE 事件。
 
 ## 快速开始
 
