@@ -21,6 +21,19 @@ class SettingsTest(unittest.TestCase):
             else:
                 os.environ[key] = original
 
+    def test_env_override_database_url(self):
+        key = "TEXT2SQL_DATABASE_URL"
+        original = os.environ.get(key)
+        os.environ[key] = "sqlite:///./custom.db"
+        try:
+            self.assertEqual(Settings().database_url, "sqlite:///./custom.db")
+        finally:
+            # 还原环境变量，避免污染其它用例。
+            if original is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = original
+
 
 if __name__ == "__main__":
     unittest.main()

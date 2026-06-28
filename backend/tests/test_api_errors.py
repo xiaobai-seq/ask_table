@@ -1,6 +1,16 @@
+import asyncio
 import unittest
 
+from text2sql.api import stream_query
 from text2sql.api.errors import build_error
+
+try:  # FastAPI/TestClient（及其依赖 httpx）可能未安装，缺失时相关集成测试 skip。
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    _HAS_FASTAPI = True
+except Exception:
+    _HAS_FASTAPI = False
 
 
 class ApiErrorsTest(unittest.TestCase):
@@ -15,6 +25,46 @@ class ApiErrorsTest(unittest.TestCase):
         first = build_error("internal_error", "boom")
         second = build_error("internal_error", "boom")
         self.assertNotEqual(first.trace_id, second.trace_id)
+
+    def test_stream_query_emits_error_event_on_failure(self):
+        # 不依赖 FastAPI：stream_query 是纯异步生成器，mock 一个 astream 抛异常的 workflow，
+        # 验证异常被收敛成一条 SSE error 事件，而不是让整条流崩溃。
+        class _BoomWorkflow:
+            async def astream(self, query, session_id, cancel_event):
+                raise RuntimeError("kaboom")
+                yield  # pragma: no cover - 使该函数成为 async generator
+
+        async def collect() -> str:
+            chunks = []
+            async for chunk in stream_query(
+                _BoomWorkflow(), "q", "s", "task-err", asyncio.Event()
+            ):
+                chunks.append(chunk)
+            return "".join(chunks)
+
+        output = asyncio.run(collect())
+        self.assertIn("event: error", output)
+
+    @unittest.skipUnless(_HAS_FASTAPI, "FastAPI/TestClient not installed")
+    def test_global_exception_handler_returns_structured_body(self):
+        from text2sql.api.errors import register_exception_handlers
+
+        app = FastAPI()
+        register_exception_handlers(app)
+
+        @app.get("/boom")
+        async def boom():
+            raise RuntimeError("kaboom")
+
+        # raise_server_exceptions=False 让 TestClient 返回处理器生成的响应而非抛出原异常。
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.get("/boom")
+
+        self.assertEqual(response.status_code, 500)
+        body = response.json()
+        self.assertEqual(set(body), {"code", "message", "trace_id"})
+        self.assertEqual(body["code"], "internal_error")
+        self.assertTrue(body["trace_id"])
 
 
 if __name__ == "__main__":
