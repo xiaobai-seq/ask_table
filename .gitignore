@@ -6,8 +6,10 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+*.egg-info/
 .text2sql_cache/
 .worktrees/
+.local/
 examples/*.db
 examples/*_report.json
 python/examples/*.db

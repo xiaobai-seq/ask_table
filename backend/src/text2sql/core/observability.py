@@ -65,11 +65,27 @@ class TraceRecorder:
         if not self._langfuse:
             return
         try:  # pragma: no cover - optional service dependency
-            self._langfuse.trace(id=self.trace_id, name="text2sql").span(
-                name=event.name,
-                input=event.input,
-                output=event.output,
-                metadata={"elapsed_ms": event.elapsed_ms, "error": event.error},
-            )
+            metadata = {"elapsed_ms": event.elapsed_ms, "error": event.error}
+            if hasattr(self._langfuse, "start_observation"):
+                observation = self._langfuse.start_observation(
+                    name=event.name,
+                    as_type="span",
+                    trace_context={"trace_id": self.trace_id},
+                    input=event.input,
+                    output=event.output,
+                    metadata=metadata,
+                    level="ERROR" if event.error else None,
+                    status_message=event.error,
+                )
+                observation.end()
+            else:
+                self._langfuse.trace(id=self.trace_id, name="text2sql").span(
+                    name=event.name,
+                    input=event.input,
+                    output=event.output,
+                    metadata=metadata,
+                )
+            if hasattr(self._langfuse, "flush"):
+                self._langfuse.flush()
         except Exception:
             pass
