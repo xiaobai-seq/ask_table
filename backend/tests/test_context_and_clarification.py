@@ -37,6 +37,36 @@ class ContextAndClarificationTests(unittest.TestCase):
         self.assertIsNotNone(clarification)
         self.assertEqual(clarification.reason, "vague_metric")
 
+    @staticmethod
+    def _hit(name: str, score: float) -> RetrievalHit:
+        return RetrievalHit(
+            table=TableInfo(name, name, columns=(ColumnInfo("id", "INTEGER"),)),
+            score=score,
+        )
+
+    def test_default_detector_flags_close_schema_candidates(self):
+        # 多张事实表得分接近（电商 orders/order_items/return_orders 场景）：
+        # 线上默认门槛必须保持保守——触发数据域澄清，避免选错事实表。
+        hits = [self._hit("orders", 1.0), self._hit("order_items", 0.97), self._hit("return_orders", 0.96)]
+
+        clarification = AmbiguityDetector().detect(
+            "各支付方式的成功交易金额分布", hits, has_context=False
+        )
+
+        self.assertIsNotNone(clarification)
+        self.assertEqual(clarification.reason, "close_schema_candidates")
+
+    def test_evaluation_detector_relaxes_close_schema_candidates(self):
+        # 评测专用触发条件：收紧 margin 且要求更多并列候选，
+        # 明确问题不再因多相近表被澄清拦截；线上门槛不受影响。
+        hits = [self._hit("orders", 1.0), self._hit("order_items", 0.97), self._hit("return_orders", 0.96)]
+
+        clarification = AmbiguityDetector.for_evaluation().detect(
+            "各支付方式的成功交易金额分布", hits, has_context=False
+        )
+
+        self.assertIsNone(clarification)
+
 
 if __name__ == "__main__":
     unittest.main()

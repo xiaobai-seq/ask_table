@@ -1,0 +1,21 @@
+{"case_id": "monthly_mom", "query": "按月份统计销售总额并计算环比增长率", "expected_tables": ["orders"], "required_sql_keywords": ["with", "lag", "over", "sum"], "allow_clarification": false}
+{"case_id": "yoy_growth", "query": "各月份销售额同比去年的增长率", "expected_tables": ["orders"], "required_sql_keywords": ["lag", "over", "sum"], "allow_clarification": false}
+{"case_id": "category_sales_share", "query": "各商品品类的销售额占比", "expected_tables": ["order_items", "skus", "spus", "categories"], "required_sql_keywords": ["join", "sum", "group by"], "allow_clarification": false}
+{"case_id": "brand_top10", "query": "销量排名前10的品牌", "expected_tables": ["order_items", "skus", "spus", "brands"], "required_sql_keywords": ["join", "sum"], "allow_clarification": false}
+{"case_id": "sku_top10", "query": "销量最高的10个商品", "expected_tables": ["order_items", "skus"], "required_sql_keywords": ["join", "sum"], "allow_clarification": false}
+{"case_id": "payment_method_dist", "query": "各支付方式的成功交易金额分布", "expected_tables": ["payments"], "required_sql_keywords": ["group by", "sum"], "allow_clarification": false}
+{"case_id": "return_rate", "query": "整体退货率是多少", "expected_tables": ["return_orders", "orders"], "required_sql_keywords": ["count"], "allow_clarification": false}
+{"case_id": "return_reason_dist", "query": "各退货原因的分布占比", "expected_tables": ["return_orders"], "required_sql_keywords": ["group by", "count"], "allow_clarification": false}
+{"case_id": "coupon_redeem_rate", "query": "优惠券整体核销率", "expected_tables": ["user_coupons"], "required_sql_keywords": ["count"], "allow_clarification": false}
+{"case_id": "member_level_spend", "query": "不同会员等级的消费总额", "expected_tables": ["membership_levels", "users", "orders"], "required_sql_keywords": ["join", "sum", "group by"], "allow_clarification": false}
+{"case_id": "conversion_funnel", "query": "浏览、加购、下单各环节的用户数转化漏斗", "expected_tables": ["user_events", "orders"], "required_sql_keywords": ["count", "distinct"], "allow_clarification": false}
+{"case_id": "category_hierarchy", "query": "展示商品类目的完整层级路径", "expected_tables": ["categories"], "required_sql_keywords": ["with recursive"], "allow_clarification": false}
+{"case_id": "employee_hierarchy", "query": "查询员工的上下级组织层级路径", "expected_tables": ["employees"], "required_sql_keywords": ["with recursive"], "allow_clarification": false}
+{"case_id": "logistics_duration", "query": "各物流公司的平均配送时长", "expected_tables": ["shipments", "logistics_companies"], "required_sql_keywords": ["join", "avg"], "allow_clarification": false}
+{"case_id": "rating_distribution", "query": "商品评价的评分分布", "expected_tables": ["product_reviews"], "required_sql_keywords": ["group by", "count"], "allow_clarification": false}
+{"case_id": "positive_review_rate", "query": "商品好评率，即评分4分及以上的占比", "expected_tables": ["product_reviews"], "required_sql_keywords": ["count"], "allow_clarification": false}
+{"case_id": "avg_order_value", "query": "平均客单价是多少", "expected_tables": ["orders"], "required_sql_keywords": ["sum", "count"], "allow_clarification": false}
+{"case_id": "repurchase_rate", "query": "用户复购率，即下单2次及以上的用户占比", "expected_tables": ["orders"], "required_sql_keywords": ["group by", "having", "count"], "allow_clarification": false}
+{"case_id": "warehouse_outbound", "query": "各仓库的出库总量", "expected_tables": ["inventory_movements", "warehouses"], "required_sql_keywords": ["join", "sum"], "allow_clarification": false}
+{"case_id": "province_sales", "query": "各省份的销售额分布", "expected_tables": ["orders"], "required_sql_keywords": ["group by", "sum"], "allow_clarification": false}
+{"case_id": "ambiguous_query", "query": "帮我看看情况", "allow_clarification": true}

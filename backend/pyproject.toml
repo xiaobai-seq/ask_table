@@ -31,6 +31,7 @@ dev = [
 [project.scripts]
 text2sql-eval = "text2sql.eval:main"
 text2sql-sample-db = "text2sql.core.sample_data:main"
+text2sql-ecommerce-db = "text2sql.core.ecommerce_data:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
