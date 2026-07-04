@@ -1,0 +1,449 @@
+# 电商测试数据集 Schema 语义元数据（人工维护）
+#
+# 为 core/ecommerce_data.py 中 SCHEMA 定义的 30 张表补充中文语义：
+# - alias：表/列的中文别名；description：业务描述；enum_values：受控取值字典。
+# 用途（见 accuracy/schema_semantics.py）：
+# - 召回阶段：中文别名/描述/枚举词并入检索语料，提升中文提问命中率；
+# - 生成阶段：枚举字典注入 SQL prompt，避免生成器编造不存在的状态/类型值。
+# 约定：表名与列名严格对齐 SCHEMA；枚举取值以 design.md §4 为准，
+# design 未显式给出的 status/type 类字段（如 skus.status）取与同域字段一致的合理值。
+
+tables:
+  # ① 用户与会员域
+  membership_levels:
+    alias: 会员等级
+    description: 会员等级维表，定义各等级的累计消费门槛与专享折扣
+    columns:
+      name:
+        alias: 等级名称
+        enum_values: [普通, 银卡, 金卡, 铂金, 钻石]
+      min_amount:
+        alias: 累计消费门槛
+        description: 达到该等级所需的累计消费金额下限
+      discount_rate:
+        alias: 会员折扣率
+  users:
+    alias: 用户
+    description: 用户维表，记录注册信息、会员等级与累计消费
+    columns:
+      username:
+        alias: 用户名
+      gender:
+        alias: 性别
+      birth_date:
+        alias: 出生日期
+      level_id:
+        alias: 会员等级ID
+      register_date:
+        alias: 注册日期
+      total_spent:
+        alias: 累计消费金额
+      status:
+        alias: 用户状态
+        enum_values: [active, inactive, banned]
+      last_login_at:
+        alias: 最后登录时间
+  user_addresses:
+    alias: 用户收货地址
+    description: 用户收货地址维表，一个用户可有多个地址
+    columns:
+      receiver_name:
+        alias: 收货人
+      province:
+        alias: 省份
+      city:
+        alias: 城市
+      district:
+        alias: 区县
+      detail:
+        alias: 详细地址
+      is_default:
+        alias: 是否默认地址
+
+  # ② 商品目录域
+  categories:
+    alias: 商品类目
+    description: 商品类目维表，parent_id 自关联表达多级类目层级（支持递归 CTE）
+    columns:
+      name:
+        alias: 类目名称
+      parent_id:
+        alias: 父类目ID
+      level:
+        alias: 类目层级
+      sort_order:
+        alias: 排序序号
+  brands:
+    alias: 品牌
+    description: 品牌维表，记录品牌名称与所属国家
+    columns:
+      name:
+        alias: 品牌名称
+      country:
+        alias: 品牌国家
+      created_at:
+        alias: 创建时间
+  suppliers:
+    alias: 供应商
+    description: 供应商维表，记录供货商及合作信息
+    columns:
+      name:
+        alias: 供应商名称
+      contact:
+        alias: 联系人
+      province:
+        alias: 所在省份
+      cooperation_since:
+        alias: 合作起始日期
+  spus:
+    alias: 商品SPU
+    description: 标准产品单元（SPU）维表，关联类目、品牌与供应商
+    columns:
+      spu_name:
+        alias: SPU名称
+      category_id:
+        alias: 类目ID
+      brand_id:
+        alias: 品牌ID
+      supplier_id:
+        alias: 供应商ID
+      listing_date:
+        alias: 上架日期
+      status:
+        alias: 商品状态
+        enum_values: [on_sale, off_sale, pending]
+  skus:
+    alias: 商品SKU
+    description: 库存量单元（SKU）维表，含售价与成本，隶属于某个 SPU
+    columns:
+      spu_id:
+        alias: 所属SPU_ID
+      sku_name:
+        alias: SKU名称
+      price:
+        alias: 售价
+      cost:
+        alias: 成本价
+      barcode:
+        alias: 条形码
+      weight_kg:
+        alias: 重量（千克）
+      status:
+        alias: 商品状态
+        enum_values: [on_sale, off_sale, pending]
+  sku_attributes:
+    alias: SKU属性
+    description: SKU 销售属性维表，以键值对记录颜色、尺寸等规格
+    columns:
+      attr_name:
+        alias: 属性名称
+        enum_values: [颜色, 尺寸, 内存, 容量]
+      attr_value:
+        alias: 属性值
+
+  # ③ 库存与仓储域
+  warehouses:
+    alias: 仓库
+    description: 仓库维表，记录仓库位置与仓储容量
+    columns:
+      name:
+        alias: 仓库名称
+      province:
+        alias: 省份
+      city:
+        alias: 城市
+      capacity:
+        alias: 仓储容量
+  inventory:
+    alias: 库存
+    description: SKU 在各仓库的实时库存，唯一约束 (sku_id, warehouse_id)
+    columns:
+      quantity:
+        alias: 可用库存
+      safety_stock:
+        alias: 安全库存
+      updated_at:
+        alias: 更新时间
+  inventory_movements:
+    alias: 库存流水
+    description: 库存出入库时序流水，用于库存周转分析
+    columns:
+      movement_type:
+        alias: 变动类型
+        enum_values: [inbound, outbound, transfer]
+      quantity:
+        alias: 变动数量
+      ref_order_id:
+        alias: 关联订单ID
+      created_at:
+        alias: 发生时间
+
+  # ④ 购物车域
+  carts:
+    alias: 购物车
+    description: 用户购物车主表
+    columns:
+      created_at:
+        alias: 创建时间
+      updated_at:
+        alias: 更新时间
+  cart_items:
+    alias: 购物车明细
+    description: 购物车内的 SKU 明细，用于加购转化漏斗分析
+    columns:
+      quantity:
+        alias: 数量
+      added_at:
+        alias: 加入时间
+
+  # ⑤ 订单交易域
+  orders:
+    alias: 订单
+    description: 订单交易事实表，记录金额、状态、下单时间与收货地址快照
+    columns:
+      order_no:
+        alias: 订单号
+      order_date:
+        alias: 下单日期
+        description: 用于趋势、环比（MoM）与同比（YoY）分析
+      status:
+        alias: 订单状态
+        enum_values: [created, paid, shipped, completed, cancelled, closed]
+      pay_status:
+        alias: 支付状态
+        enum_values: [unpaid, paid, partial_refund, refunded]
+      total_amount:
+        alias: 订单应付金额
+        description: 应付总额，等于商品总额减优惠再加运费
+      product_amount:
+        alias: 商品总额
+      discount_amount:
+        alias: 优惠金额
+      shipping_fee:
+        alias: 运费
+      receiver_province:
+        alias: 收货省份
+      receiver_city:
+        alias: 收货城市
+      coupon_id:
+        alias: 优惠券ID
+      promotion_id:
+        alias: 促销活动ID
+  order_items:
+    alias: 订单明细
+    description: 订单商品明细事实表，记录每个 SKU 的数量与成交金额
+    columns:
+      quantity:
+        alias: 购买数量
+      unit_price:
+        alias: 成交单价
+      subtotal:
+        alias: 小计金额
+  order_status_history:
+    alias: 订单状态历史
+    description: 订单状态流转时序表，记录每次状态变更
+    columns:
+      from_status:
+        alias: 原状态
+        enum_values: [created, paid, shipped, completed, cancelled, closed]
+      to_status:
+        alias: 新状态
+        enum_values: [created, paid, shipped, completed, cancelled, closed]
+      changed_at:
+        alias: 变更时间
+      operator:
+        alias: 操作人
+
+  # ⑥ 支付域
+  payments:
+    alias: 支付记录
+    description: 订单支付流水事实表，记录支付方式、金额与结果
+    columns:
+      method:
+        alias: 支付方式
+        enum_values: [alipay, wechat, credit_card, balance]
+      amount:
+        alias: 支付金额
+      status:
+        alias: 支付状态
+        enum_values: [success, failed, pending]
+      paid_at:
+        alias: 支付时间
+      transaction_no:
+        alias: 交易流水号
+  refunds:
+    alias: 退款记录
+    description: 退款流水事实表，关联支付与订单
+    columns:
+      amount:
+        alias: 退款金额
+      reason:
+        alias: 退款原因
+      status:
+        alias: 退款状态
+        enum_values: [pending, success, failed]
+      refunded_at:
+        alias: 退款时间
+
+  # ⑦ 物流域
+  logistics_companies:
+    alias: 物流公司
+    description: 物流承运公司维表
+    columns:
+      name:
+        alias: 物流公司名称
+      code:
+        alias: 公司编码
+  shipments:
+    alias: 发货物流
+    description: 订单发货与配送事实表，用于物流时效分析
+    columns:
+      tracking_no:
+        alias: 运单号
+      status:
+        alias: 物流状态
+        enum_values: [pending, shipped, in_transit, delivered, signed]
+      shipped_at:
+        alias: 发货时间
+      delivered_at:
+        alias: 送达时间
+      receiver_province:
+        alias: 收货省份
+      receiver_city:
+        alias: 收货城市
+
+  # ⑧ 售后域
+  return_orders:
+    alias: 退货单
+    description: 售后退货申请事实表，用于退货率与退货原因分布分析
+    columns:
+      reason:
+        alias: 退货原因
+        enum_values: [quality, wrong_item, not_as_described, no_reason, damaged]
+      status:
+        alias: 退货状态
+        enum_values: [applied, approved, rejected, refunded, completed]
+      apply_date:
+        alias: 申请日期
+      refund_amount:
+        alias: 退款金额
+      complete_date:
+        alias: 完成日期
+  return_items:
+    alias: 退货明细
+    description: 退货单内的商品明细
+    columns:
+      quantity:
+        alias: 退货数量
+
+  # ⑨ 营销促销域
+  coupons:
+    alias: 优惠券
+    description: 优惠券维表，定义类型、门槛与优惠值
+    columns:
+      name:
+        alias: 优惠券名称
+      type:
+        alias: 优惠券类型
+        enum_values: [full_reduction, discount, cash]
+      threshold:
+        alias: 满减门槛
+      value:
+        alias: 优惠值
+      valid_from:
+        alias: 生效日期
+      valid_to:
+        alias: 失效日期
+      total_issued:
+        alias: 发放总量
+      status:
+        alias: 优惠券状态
+        enum_values: [active, expired]
+  user_coupons:
+    alias: 用户优惠券
+    description: 用户领券与核销记录，用于优惠券核销率分析
+    columns:
+      status:
+        alias: 使用状态
+        enum_values: [unused, used, expired]
+      received_at:
+        alias: 领取时间
+      used_at:
+        alias: 使用时间
+      order_id:
+        alias: 核销订单ID
+  promotions:
+    alias: 促销活动
+    description: 促销活动维表，定义活动类型与起止时间
+    columns:
+      name:
+        alias: 活动名称
+      type:
+        alias: 活动类型
+        enum_values: [full_reduction, discount, flash_sale]
+      start_date:
+        alias: 开始日期
+      end_date:
+        alias: 结束日期
+      discount_rate:
+        alias: 折扣率
+  promotion_products:
+    alias: 活动商品
+    description: 促销活动与参与 SKU 的关联表，含活动价
+    columns:
+      promo_price:
+        alias: 活动价
+
+  # ⑩ 评价内容域
+  product_reviews:
+    alias: 商品评价
+    description: 商品评价事实表，用于好评率与评分分布分析
+    columns:
+      rating:
+        alias: 评分
+        description: 用户评分，取值 1 到 5
+        enum_values: [1, 2, 3, 4, 5]
+      content:
+        alias: 评价内容
+      has_image:
+        alias: 是否有图
+      created_at:
+        alias: 评价时间
+      reply_content:
+        alias: 商家回复
+
+  # ⑪ 行为流量域
+  user_events:
+    alias: 用户行为事件
+    description: 用户行为埋点事实表（最大表），用于转化漏斗与留存分析
+    columns:
+      sku_id:
+        alias: 商品SKU_ID
+      event_type:
+        alias: 事件类型
+        enum_values: [view, add_cart, favorite, share]
+      event_time:
+        alias: 事件时间
+      session_id:
+        alias: 会话ID
+      source:
+        alias: 来源渠道
+        enum_values: [app, web, mini_program]
+
+  # ⑫ 组织运营域
+  employees:
+    alias: 员工
+    description: 员工组织维表，manager_id 自关联表达上下级层级（支持递归 CTE）
+    columns:
+      employee_name:
+        alias: 员工姓名
+      manager_id:
+        alias: 上级经理ID
+      department:
+        alias: 部门
+      role:
+        alias: 职位
+      hire_date:
+        alias: 入职日期
+      region:
+        alias: 所属大区
