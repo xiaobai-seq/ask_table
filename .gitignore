@@ -17,4 +17,5 @@ python/examples/*_report.json
 backend/examples/*.db
 backend/examples/*_report.json
 backend/examples/ecommerce/*.db
+backend/examples/ecommerce/*.sql
 backend/examples/ecommerce/*_report.json
