@@ -86,6 +86,35 @@ npm test         # 单元测试（vitest）
 npm run build    # 生产构建
 ```
 
+## 电商测试数据集（复杂多表场景）
+
+除内置 `demo.db` 外，仓库提供一套约 30 张表的电商场景数据集（用户/会员、商品 SPU-SKU、库存、购物车、订单、支付、物流、售后、营销、评价、行为等 12 个业务域，中等规模真实感确定性数据），用于在「表多、关系复杂」场景下测试系统的表检索、JOIN 路径分析与复杂 SQL 生成。
+
+生成数据（同时产出 SQLite 库与 MySQL 建表脚本，固定随机种子可复现）：
+
+```bash
+cd backend
+PYTHONPATH=src python3 -m text2sql.core.ecommerce_data \
+  --sqlite-out examples/ecommerce/ecommerce.db \
+  --mysql-out  examples/ecommerce/ecommerce_mysql.sql
+```
+
+通过环境变量把整套资产（查询库 + schema 语义 + few-shot）切到电商场景后评测：
+
+```bash
+cd backend
+TEXT2SQL_SCHEMA_METADATA_PATH=./examples/ecommerce/schema_metadata.yaml \
+TEXT2SQL_FEW_SHOT_SEED_PATH=./examples/ecommerce/few_shot_seed.jsonl \
+PYTHONPATH=src python3 -m text2sql.eval \
+  --db examples/ecommerce/ecommerce.db \
+  --cases examples/ecommerce/eval_cases.jsonl \
+  --report examples/ecommerce/eval_report.json
+```
+
+启动 API 时另设 `TEXT2SQL_DATABASE_URL=sqlite:///./examples/ecommerce/ecommerce.db`，问答即走电商库。
+
+> `ecommerce.db` 与 `ecommerce_mysql.sql` 是确定性生成物，已被 `.gitignore` 忽略、随时可复现；仓库只提交 `schema_metadata.yaml`、`few_shot_seed.jsonl`、`eval_cases.jsonl` 三份文本资产。评测在本地无 LLM 时走规则生成器，仅趋势/环比/同比/递归等内置模板可通过；配置 `DASHSCOPE_API_KEY` 与 `TEXT2SQL_USE_LLM=1` 后 few-shot 生效，复杂查询准确率显著提升。
+
 ## API
 
 `POST /query`
