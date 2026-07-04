@@ -43,6 +43,10 @@ class HashingEmbeddingProvider:
         return [self.embed(text) for text in texts]
 
 
+# DashScope text-embedding 接口单次 input 数量上限。
+_DASHSCOPE_MAX_BATCH = 25
+
+
 class DashScopeEmbeddingProvider:
     """DashScope text embedding 适配器，延迟 import 以保持本地测试免依赖。"""
 
@@ -54,6 +58,13 @@ class DashScopeEmbeddingProvider:
         return self.batch_embed([text])[0]
 
     def batch_embed(self, texts: list[str]) -> list[list[float]]:
+        # DashScope 单次 input 上限 25，超过需分批，否则多表 schema 向量化直接 400。
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), _DASHSCOPE_MAX_BATCH):
+            vectors.extend(self._embed_chunk(texts[start : start + _DASHSCOPE_MAX_BATCH]))
+        return vectors
+
+    def _embed_chunk(self, texts: list[str]) -> list[list[float]]:
         try:  # pragma: no cover - optional network dependency
             import dashscope
         except Exception as exc:  # pragma: no cover
