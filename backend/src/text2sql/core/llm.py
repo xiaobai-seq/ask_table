@@ -20,7 +20,7 @@ class DashScopeLLMProvider:
     """DashScope/Qwen 同步 SDK 的 async 包装。"""
 
     def __init__(self, model: str | None = None, api_key: str | None = None) -> None:
-        self.model = model or os.getenv("DASHSCOPE_LLM_MODEL", "qwen-plus")
+        self.model = model or os.getenv("DASHSCOPE_LLM_MODEL", "qwen3.7-plus")
         self.api_key = api_key or os.getenv("DASHSCOPE_API_KEY")
 
     async def complete(self, prompt: str) -> str:

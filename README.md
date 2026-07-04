@@ -60,6 +60,9 @@ TEXT2SQL_API_RELOAD=0 ./scripts/start-backend.sh
 TEXT2SQL_INSTALL_DEPS=0 ./scripts/start-backend.sh
 ```
 
+启用 LLM 时，SQL 生成和结果总结都使用 `DASHSCOPE_LLM_MODEL`，默认
+`qwen3.7-plus`。
+
 也可以手动启动：
 
 ```bash

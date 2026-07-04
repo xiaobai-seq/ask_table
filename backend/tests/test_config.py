@@ -2,6 +2,7 @@ import os
 import unittest
 
 from text2sql.config import Settings
+from text2sql.core.llm import DashScopeLLMProvider
 
 
 class SettingsTest(unittest.TestCase):
@@ -33,6 +34,21 @@ class SettingsTest(unittest.TestCase):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = original
+
+    def test_default_dashscope_llm_model(self):
+        self.assertEqual(Settings().dashscope_llm_model, "qwen3.7-plus")
+
+    def test_dashscope_provider_defaults_to_global_model(self):
+        original = os.environ.get("DASHSCOPE_LLM_MODEL")
+        os.environ.pop("DASHSCOPE_LLM_MODEL", None)
+        try:
+            provider = DashScopeLLMProvider(api_key="test-key")
+            self.assertEqual(provider.model, "qwen3.7-plus")
+        finally:
+            if original is None:
+                os.environ.pop("DASHSCOPE_LLM_MODEL", None)
+            else:
+                os.environ["DASHSCOPE_LLM_MODEL"] = original
 
 
 if __name__ == "__main__":
