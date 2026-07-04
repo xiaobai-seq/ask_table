@@ -46,7 +46,21 @@ PYTHONPATH=src python3 -m text2sql.core.sample_data --output examples/demo.db
 PYTHONPATH=src python3 -m unittest discover -s tests
 ```
 
-安装依赖并启动 API：
+安装依赖并启动 API（推荐）：
+
+```bash
+./scripts/start-backend.sh
+```
+
+脚本默认读取根目录 `.env`，必要时创建/复用 `backend/.venv` 并执行 `pip install -e backend`，在缺少样例库时生成 `backend/examples/demo.db`，并启动 `http://127.0.0.1:8000`。常用覆盖项：
+
+```bash
+TEXT2SQL_API_PORT=8001 ./scripts/start-backend.sh
+TEXT2SQL_API_RELOAD=0 ./scripts/start-backend.sh
+TEXT2SQL_INSTALL_DEPS=0 ./scripts/start-backend.sh
+```
+
+也可以手动启动：
 
 ```bash
 cd backend
