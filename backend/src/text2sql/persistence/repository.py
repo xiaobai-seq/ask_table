@@ -162,6 +162,9 @@ class SqlAlchemyHistoryRepository:
                         turn_count=1,
                     )
                 )
+                # 没有 ORM relationship 时，显式 flush 父行，避免 MySQL 等强 FK 数据库
+                # 在同一事务内先插入 query_history 导致外键失败。
+                session.flush()
             else:
                 existing.updated_at = now
                 existing.turn_count = (existing.turn_count or 0) + 1

@@ -126,10 +126,17 @@ class InMemoryHistoryRepositoryTests(HistoryRepositoryContract, unittest.TestCas
 @unittest.skipUnless(_HAS_SQLALCHEMY, "SQLAlchemy not installed")
 class SqlAlchemyHistoryRepositoryTests(HistoryRepositoryContract, unittest.TestCase):
     def make_repo(self):
+        from sqlalchemy import event
+
         from text2sql.persistence.db import create_metadata_engine, create_session_factory, init_models
         from text2sql.persistence.repository import SqlAlchemyHistoryRepository
 
         engine = create_metadata_engine("sqlite://")
+
+        @event.listens_for(engine, "connect")
+        def _enable_foreign_keys(dbapi_connection, _connection_record):
+            dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
         init_models(engine)
         return SqlAlchemyHistoryRepository(create_session_factory(engine))
 
