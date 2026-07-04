@@ -67,6 +67,7 @@ class Text2SQLWorkflow:
         few_shot_store: FewShotStore | None = None,
         few_shot_top_k: int = 3,
         sql_repair_max_retries: int = 2,
+        ambiguity_detector: AmbiguityDetector | None = None,
     ) -> None:
         # schema 可以由调用方直接注入，也可以从数据库连接动态 introspect。
         # 测试里常直接传 tables；API/CLI 则通常走 database_url_or_path。
@@ -92,7 +93,8 @@ class Text2SQLWorkflow:
             few_shot_store=few_shot_store,
             few_shot_top_k=few_shot_top_k,
         )
-        self.ambiguity_detector = AmbiguityDetector()
+        # 默认使用线上保守门槛；评测可注入 AmbiguityDetector.for_evaluation() 收紧触发。
+        self.ambiguity_detector = ambiguity_detector or AmbiguityDetector()
         self.executor = QueryExecutor(database_url_or_path, tables) if database_url_or_path else None
         self.summarizer = DataInsightSummarizer(llm_provider)
         self.chart_recommender = ChartRecommender()
