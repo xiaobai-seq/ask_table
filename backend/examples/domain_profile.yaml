@@ -1,0 +1,95 @@
+# Domain profile for the built-in demo/ecommerce assets.
+#
+# Override with TEXT2SQL_DOMAIN_PROFILE_PATH to adapt Text2SQL to another business
+# domain before changing code. Missing keys fall back to the in-code default profile.
+
+name: default
+description: Default profile compatible with the built-in demo and ecommerce examples.
+
+synonyms:
+  订单: [order, orders, sales, 交易, 成交]
+  销售: [sales, amount, gmv, revenue, 营收, 收入]
+  客户: [customer, customers, user, 用户, 买家]
+  商品: [product, products, sku, item, 货品]
+  员工: [employee, staff, member, 组织, 部门]
+  金额: [amount, price, payment, gmv, revenue]
+  时间: [date, time, created, month, day, year]
+  日期: [date, time, created, day]
+  月份: [month, date, time, period]
+  月: [month, date, time, period]
+  地区: [region, province, city, area]
+  排名: [rank, top, 排序]
+  增长: [growth, rate, increase, 环比, 同比]
+  趋势: [trend, time, period, line]
+  环比: [growth, rate, lag, period, time]
+  同比: [growth, rate, lag, period, time]
+
+schema:
+  table_comment_rules:
+    - contains_any: [order]
+      comment: 订单 交易 销售 明细
+    - contains_any: [customer, user]
+      comment: 客户 用户 买家
+    - contains_any: [product, sku]
+      comment: 商品 产品 SKU
+    - contains_any: [employee, staff]
+      comment: 员工 组织 架构 层级
+    - contains_any: [region]
+      comment: 地区 区域 城市
+  table_tag_keywords: [order, sales, customer, product, employee, region]
+  column_tag_keywords:
+    time: [date, time, created, month, year]
+    metric: [amount, price, gmv, revenue, total, count, qty, quantity, number]
+    key: [id, key]
+    dimension: [name, category, type, status, region, city]
+
+sql:
+  column_hints:
+    time: [date, time, created, month]
+    metric: [amount, total, price, gmv, revenue, quantity, count]
+    dimension: [category, type, status, region, city, name]
+    hierarchy_parent: [parent, manager]
+    display_name: [name]
+  intent_terms:
+    hierarchy: [递归, 层级, 上下级, 组织树, 路径]
+    growth: [环比, 同比, 增长率, 增长, 趋势, rolling, 滚动]
+    ranking: [排名, 排行, top, 前]
+    grouping: [按, 每, 各, 分布, 占比]
+    kpi: [总, 金额, 销售, 收入, gmv]
+    time_metric: [环比, 同比, 增长, 趋势, 月份, 按月]
+    metric: [金额, 销售, 收入, gmv, 排名, top, 前]
+  related_dimension_terms: [地区, 区域, 城市, 客户, 用户, 商品, 品类, 类别]
+  dimension_candidate_groups:
+    - terms: [地区, 区域]
+      columns: [region, area, province]
+    - terms: [城市]
+      columns: [city]
+    - terms: [客户, 用户]
+      columns: [customer_name, user_name]
+    - terms: [商品, 品类, 类别]
+      columns: [category, product_name, name]
+
+clarification:
+  vague_words: [情况, 数据, 看一下, 分析一下, 表现, 怎么样]
+  metric_words: [金额, 数量, 订单, 客户, 销售, 收入, 增长, 排名, 趋势, 转化]
+  options: [订单金额, 订单数量, 客户数量, 商品销量]
+
+render:
+  numeric_hints: [amount, value, count, rate, price, metric, total, qty, quantity]
+  time_hints: [date, time, month, year, period, day]
+  dimension_hints: [name, category, type, status, region, city, dimension]
+  series_hints: [series, category, type, status]
+  chart_intents:
+    line: [趋势, 环比, 同比, 走势, 时间]
+    ratio: [占比, 比例]
+    funnel: [漏斗, 转化]
+    sankey: [桑基, 流向]
+    heatmap: [热力, 矩阵]
+    scatter: [散点, 相关]
+    histogram: [分布, 直方]
+
+frontend:
+  example_queries:
+    - 按月份统计订单金额趋势
+    - 各地区销售额占比
+    - 销量最高的前 10 个商品

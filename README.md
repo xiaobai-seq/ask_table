@@ -61,7 +61,8 @@ TEXT2SQL_INSTALL_DEPS=0 ./scripts/start-backend.sh
 ```
 
 启用 LLM 时，SQL 生成和结果总结都使用 `DASHSCOPE_LLM_MODEL`，默认
-`qwen3.7-plus`。
+`qwen3.7-plus`。使用百炼 MaaS workspace 模型时，还需要配置
+`DASHSCOPE_HTTP_BASE_URL=https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1`。
 
 也可以手动启动：
 

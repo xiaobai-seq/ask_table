@@ -10,6 +10,7 @@ import json
 import re
 from typing import TYPE_CHECKING, Protocol
 
+from text2sql.config.domain_profile import DomainProfile, contains_any, get_domain_profile
 from text2sql.core.models import RelationshipPath, RetrievalHit, SQLPlan, TableInfo
 
 if TYPE_CHECKING:  # pragma: no cover - 仅类型注解使用
@@ -44,12 +45,14 @@ class DeterministicSQLGenerator:
         semantics: "SchemaSemantics | None" = None,
         few_shot_store: "FewShotStore | None" = None,
         few_shot_top_k: int = 3,
+        domain_profile: DomainProfile | None = None,
     ) -> None:
         # semantics 可选：注入枚举字典等业务语义，缺省时退化为纯结构化 prompt。
         # few_shot_store 可选：注入「问题→SQL」示例，仅影响 LLM prompt，规则路径不受影响。
         self.semantics = semantics
         self.few_shot_store = few_shot_store
         self.few_shot_top_k = few_shot_top_k
+        self.domain_profile = domain_profile or get_domain_profile()
 
     def build_prompt(
         self,
@@ -114,22 +117,23 @@ class DeterministicSQLGenerator:
 
         # 先从候选表中挑一张事实表，再按字段标签/字段名找时间、指标和维度列。
         # 这些探测结果决定后续生成趋势、排名、分组或 KPI SQL。
-        table = select_table_for_query(query, [hit.table for hit in hits])
-        date_col = find_first_column(table, ("time",), name_contains=("date", "time", "created", "month"))
+        profile = self.domain_profile
+        table = select_table_for_query(query, [hit.table for hit in hits], profile)
+        date_col = find_first_column(table, ("time",), name_contains=profile.column_hints("time"))
         metric_col = find_first_column(
             table,
             ("metric",),
-            name_contains=("amount", "total", "price", "gmv", "revenue", "quantity", "count"),
+            name_contains=profile.column_hints("metric"),
         )
         dimension_col = find_first_column(
             table,
             ("dimension",),
-            name_contains=("category", "type", "status", "region", "city", "name"),
+            name_contains=profile.column_hints("dimension"),
         )
         pk = table.primary_keys()[0] if table.primary_keys() else table.columns[0].name
 
         # 组织树、上下级等层级问题优先走递归 CTE。
-        if any(word in lowered for word in ("递归", "层级", "上下级", "组织树", "路径")):
+        if profile.has_intent(lowered, "hierarchy"):
             recursive_plan = self._recursive_cte(table)
             if recursive_plan:
                 return recursive_plan
@@ -140,7 +144,7 @@ class DeterministicSQLGenerator:
             return join_plan
 
         # 趋势/同比/环比场景需要先聚合到周期，再用窗口函数比较上一期。
-        if any(word in lowered for word in ("环比", "同比", "增长率", "增长", "趋势", "rolling", "滚动")):
+        if profile.has_intent(lowered, "growth"):
             if date_col and metric_col:
                 period = date_expression(date_col)
                 sql = f"""
@@ -171,7 +175,7 @@ ORDER BY period
                 )
 
         # TopN/排名场景用 RANK，而不是简单 LIMIT，避免并列名次被截断得不清楚。
-        if any(word in lowered for word in ("排名", "排行", "top", "前")):
+        if profile.has_intent(lowered, "ranking"):
             if metric_col:
                 dim = dimension_col.name if dimension_col else pk
                 limit = extract_limit(query) or 10
@@ -197,7 +201,7 @@ ORDER BY metric_rank
                 )
 
         # 常规“按维度看分布/占比”退化为 GROUP BY，指标不存在时用 COUNT(*)。
-        if any(word in lowered for word in ("按", "每", "各", "分布", "占比")) and dimension_col:
+        if profile.has_intent(lowered, "grouping") and dimension_col:
             metric_expr = f"SUM({metric_col.name})" if metric_col else "COUNT(*)"
             metric_alias = "metric_value" if metric_col else "row_count"
             sql = f"""
@@ -208,13 +212,13 @@ ORDER BY {metric_alias} DESC
 """.strip()
             return SQLPlan(
                 sql,
-                chart_type="pie" if "占比" in query else "bar",
+                chart_type="pie" if contains_any(query, profile.chart_intent_terms("ratio")) else "bar",
                 reasoning="Group by detected business dimension.",
                 confidence=0.78,
             )
 
         # 单指标查询直接返回 KPI 聚合。
-        if metric_col and any(word in lowered for word in ("总", "金额", "销售", "收入", "gmv")):
+        if metric_col and profile.has_intent(lowered, "kpi"):
             sql = f"SELECT SUM({metric_col.name}) AS metric_value FROM {table.name}"
             return SQLPlan(sql, chart_type="kpi", reasoning="Aggregate primary metric.", confidence=0.76)
 
@@ -232,15 +236,14 @@ ORDER BY {metric_alias} DESC
         """生成事实表到维表的 JOIN 聚合 SQL。"""
 
         lowered = query.lower()
-        wants_related_dimension = any(
-            word in lowered for word in ("地区", "区域", "城市", "客户", "用户", "商品", "品类", "类别")
-        )
+        profile = self.domain_profile
+        wants_related_dimension = contains_any(lowered, profile.related_dimension_terms)
         if not wants_related_dimension:
             return None
         metric_col = find_first_column(
             fact_table,
             ("metric",),
-            ("amount", "total", "price", "gmv", "revenue", "quantity", "count"),
+            profile.column_hints("metric"),
         )
         if not metric_col:
             return None
@@ -256,7 +259,7 @@ ORDER BY {metric_alias} DESC
             other_table = table_map.get(other_name)
             if not other_table:
                 continue
-            dimension_col = pick_query_dimension(query, other_table)
+            dimension_col = pick_query_dimension(query, other_table, profile)
             if not dimension_col:
                 continue
             join_clauses = build_join_clauses(fact_table.name, list(path.joins))
@@ -288,11 +291,17 @@ ORDER BY metric_value DESC
             None,
         )
         id_col = table.primary_keys()[0] if table.primary_keys() else "id"
+        profile = self.domain_profile
+        parent_hints = profile.column_hints("hierarchy_parent")
+        name_hints = profile.column_hints("display_name")
         parent_col = self_fk.source_column if self_fk else next(
-            (col.name for col in table.columns if "parent" in col.name.lower() or "manager" in col.name.lower()),
+            (col.name for col in table.columns if any(hint in col.name.lower() for hint in parent_hints)),
             None,
         )
-        name_col = next((col.name for col in table.columns if "name" in col.name.lower()), id_col)
+        name_col = next(
+            (col.name for col in table.columns if any(hint in col.name.lower() for hint in name_hints)),
+            id_col,
+        )
         if not parent_col:
             return None
         sql = f"""
@@ -335,8 +344,9 @@ class PromptedSQLGenerator(DeterministicSQLGenerator):
         semantics: "SchemaSemantics | None" = None,
         few_shot_store: "FewShotStore | None" = None,
         few_shot_top_k: int = 3,
+        domain_profile: DomainProfile | None = None,
     ) -> None:
-        super().__init__(semantics, few_shot_store, few_shot_top_k)
+        super().__init__(semantics, few_shot_store, few_shot_top_k, domain_profile)
         self.llm_provider = llm_provider
 
     def build_repair_prompt(
@@ -463,60 +473,62 @@ def build_join_clauses(start_table: str, joins) -> list[str]:
     return clauses
 
 
-def pick_query_dimension(query: str, table: TableInfo):
+def pick_query_dimension(query: str, table: TableInfo, profile: DomainProfile | None = None):
     """根据用户问题中的业务词，在维表中挑选 GROUP BY 字段。"""
 
+    profile = profile or get_domain_profile()
     candidates: list[str] = []
-    if any(word in query for word in ("地区", "区域")):
-        candidates.extend(["region", "area", "province"])
-    if "城市" in query:
-        candidates.append("city")
-    if any(word in query for word in ("客户", "用户")):
-        # 不加裸 "name"：否则会误命中 products.product_name，把“按客户地区”查询拼到商品维表。
-        candidates.extend(["customer_name", "user_name"])
-    if any(word in query for word in ("商品", "品类", "类别")):
-        candidates.extend(["category", "product_name", "name"])
+    for group in profile.dimension_candidate_groups:
+        if contains_any(query, group["terms"]):
+            candidates.extend(group["columns"])
     for wanted in candidates:
         for column in table.columns:
             if wanted in column.name.lower():
                 return column
     if candidates:
         return None
-    return find_first_column(table, ("dimension",), ("region", "city", "category", "name", "type"))
+    return find_first_column(table, ("dimension",), profile.column_hints("dimension"))
 
 
-def select_table_for_query(query: str, tables: list[TableInfo]) -> TableInfo:
+def select_table_for_query(
+    query: str, tables: list[TableInfo], profile: DomainProfile | None = None
+) -> TableInfo:
     """在召回结果中挑主表：层级优先，其次时间指标事实表，再其次指标表。"""
 
+    profile = profile or get_domain_profile()
     lowered = query.lower()
-    if any(word in lowered for word in ("递归", "层级", "上下级", "组织树", "路径")):
+    if profile.has_intent(lowered, "hierarchy"):
+        parent_hints = profile.column_hints("hierarchy_parent")
         for table in tables:
             if any(fk.source_table == table.name and fk.target_table == table.name for fk in table.foreign_keys):
                 return table
-            if any("parent" in col.name.lower() or "manager" in col.name.lower() for col in table.columns):
+            if any(
+                any(hint in col.name.lower() for hint in parent_hints)
+                for col in table.columns
+            ):
                 return table
 
-    needs_time_metric = any(word in lowered for word in ("环比", "同比", "增长", "趋势", "月份", "按月"))
+    needs_time_metric = profile.has_intent(lowered, "time_metric")
     if needs_time_metric:
         for table in tables:
-            has_time = bool(find_first_column(table, ("time",), ("date", "time", "created", "month")))
+            has_time = bool(find_first_column(table, ("time",), profile.column_hints("time")))
             has_metric = bool(
                 find_first_column(
                     table,
                     ("metric",),
-                    ("amount", "total", "price", "gmv", "revenue", "quantity", "count"),
+                    profile.column_hints("metric"),
                 )
             )
             if has_time and has_metric:
                 return table
 
-    needs_metric = any(word in lowered for word in ("金额", "销售", "收入", "gmv", "排名", "top", "前"))
+    needs_metric = profile.has_intent(lowered, "metric")
     if needs_metric:
         for table in tables:
             if find_first_column(
                 table,
                 ("metric",),
-                ("amount", "total", "price", "gmv", "revenue", "quantity", "count"),
+                profile.column_hints("metric"),
             ):
                 return table
     return tables[0]

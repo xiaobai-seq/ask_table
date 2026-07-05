@@ -16,6 +16,7 @@ from typing import Any
 from text2sql.accuracy.few_shot import InMemoryFewShotStore
 from text2sql.accuracy.schema_semantics import SchemaSemantics
 from text2sql.config import Settings
+from text2sql.config.domain_profile import DomainProfile, set_active_domain_profile
 from text2sql.core.clarification import AmbiguityDetector
 from text2sql.core.graph import Text2SQLWorkflow
 from text2sql.core.models import EvalCase, EvalResult, to_plain
@@ -332,6 +333,8 @@ def main() -> None:
 
     db = args.db if "://" in args.db else f"sqlite:///{args.db}"
     settings = Settings()
+    domain_profile = DomainProfile.from_yaml(settings.domain_profile_path)
+    set_active_domain_profile(domain_profile)
     semantics = SchemaSemantics.from_yaml(settings.schema_metadata_path)
     few_shot_store = InMemoryFewShotStore.from_jsonl(settings.few_shot_seed_path)
     workflow = Text2SQLWorkflow(
@@ -341,7 +344,8 @@ def main() -> None:
         few_shot_top_k=settings.few_shot_top_k,
         sql_repair_max_retries=settings.sql_repair_max_retries,
         # 评测收紧数据域澄清触发，反映端到端生成能力；线上 API 仍用默认保守门槛。
-        ambiguity_detector=AmbiguityDetector.for_evaluation(),
+        ambiguity_detector=AmbiguityDetector.for_evaluation(domain_profile),
+        domain_profile=domain_profile,
     )
     cases = load_cases(args.cases)
     results = asyncio.run(EvaluationRunner(workflow).run(cases))
