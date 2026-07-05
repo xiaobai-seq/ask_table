@@ -60,6 +60,7 @@ class PersistenceModelTests(unittest.TestCase):
             "few_shot_examples",
             "schema_metadata",
             "eval_runs",
+            "eval_case_results",
         }
         self.assertTrue(expected.issubset(set(Base.metadata.tables)))
 
