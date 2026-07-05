@@ -210,6 +210,8 @@ class EvalResult:
     metrics: dict[str, float]
     generated_sql: str | None
     errors: tuple[str, ...] = ()
+    # 逐 case 全环节 trace（检索/prompt/执行等），供报告与回溯落库；默认 None 保持向后兼容。
+    trace: dict[str, Any] | None = None
 
 
 class AgentState(TypedDict, total=False):
