@@ -1,5 +1,6 @@
 import os
 import unittest
+from unittest.mock import patch
 
 from text2sql.config import Settings
 from text2sql.core.llm import DashScopeLLMProvider
@@ -38,6 +39,21 @@ class SettingsTest(unittest.TestCase):
     def test_default_dashscope_llm_model(self):
         self.assertEqual(Settings().dashscope_llm_model, "qwen3.7-plus")
 
+    def test_env_override_dashscope_http_base_url(self):
+        key = "DASHSCOPE_HTTP_BASE_URL"
+        original = os.environ.get(key)
+        os.environ[key] = "https://workspace.cn-beijing.maas.aliyuncs.com/api/v1"
+        try:
+            self.assertEqual(
+                Settings().dashscope_http_base_url,
+                "https://workspace.cn-beijing.maas.aliyuncs.com/api/v1",
+            )
+        finally:
+            if original is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = original
+
     def test_dashscope_provider_defaults_to_global_model(self):
         original = os.environ.get("DASHSCOPE_LLM_MODEL")
         os.environ.pop("DASHSCOPE_LLM_MODEL", None)
@@ -49,6 +65,46 @@ class SettingsTest(unittest.TestCase):
                 os.environ.pop("DASHSCOPE_LLM_MODEL", None)
             else:
                 os.environ["DASHSCOPE_LLM_MODEL"] = original
+
+    def test_dashscope_provider_passes_base_address_to_generation(self):
+        base_url = "https://workspace.cn-beijing.maas.aliyuncs.com/api/v1"
+        provider = DashScopeLLMProvider(
+            model="qwen-plus",
+            api_key="test-key",
+            base_http_api_url=base_url,
+        )
+        fake_response = {
+            "output": {"choices": [{"message": {"content": "ok"}}]},
+        }
+
+        with patch("dashscope.Generation.call", return_value=fake_response) as call:
+            self.assertEqual(provider._complete_sync("hello"), "ok")
+
+        self.assertEqual(call.call_args.kwargs["base_address"], base_url)
+
+    def test_qwen37_provider_uses_multimodal_generation(self):
+        base_url = "https://workspace.cn-beijing.maas.aliyuncs.com/api/v1"
+        provider = DashScopeLLMProvider(
+            model="qwen3.7-plus",
+            api_key="test-key",
+            base_http_api_url=base_url,
+        )
+        fake_response = {
+            "output": {
+                "choices": [
+                    {"message": {"content": [{"text": "ok"}]}},
+                ],
+            },
+        }
+
+        with patch("dashscope.MultiModalConversation.call", return_value=fake_response) as call:
+            self.assertEqual(provider._complete_sync("hello"), "ok")
+
+        self.assertEqual(call.call_args.kwargs["base_address"], base_url)
+        self.assertEqual(
+            call.call_args.kwargs["messages"][1]["content"],
+            [{"text": "hello"}],
+        )
 
 
 if __name__ == "__main__":

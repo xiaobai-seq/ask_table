@@ -34,6 +34,7 @@ if _HAS_PYDANTIC_SETTINGS:
         use_llm: bool = False
         dashscope_api_key: str | None = Field(default=None, alias="DASHSCOPE_API_KEY")
         dashscope_llm_model: str = Field(default="qwen3.7-plus", alias="DASHSCOPE_LLM_MODEL")
+        dashscope_http_base_url: str | None = Field(default=None, alias="DASHSCOPE_HTTP_BASE_URL")
 
         sql_repair_max_retries: int = 2
         rate_limit_per_minute: int = 60
@@ -61,6 +62,7 @@ else:
             self.use_llm = os.getenv("TEXT2SQL_USE_LLM", "0") in ("1", "true", "True")
             self.dashscope_api_key = os.getenv("DASHSCOPE_API_KEY")
             self.dashscope_llm_model = os.getenv("DASHSCOPE_LLM_MODEL", "qwen3.7-plus")
+            self.dashscope_http_base_url = os.getenv("DASHSCOPE_HTTP_BASE_URL")
             self.sql_repair_max_retries = int(os.getenv("TEXT2SQL_SQL_REPAIR_MAX_RETRIES", "2"))
             self.rate_limit_per_minute = int(os.getenv("TEXT2SQL_RATE_LIMIT_PER_MINUTE", "60"))
             self.rate_limit_fail_open = os.getenv("TEXT2SQL_RATE_LIMIT_FAIL_OPEN", "1") in ("1", "true", "True")
