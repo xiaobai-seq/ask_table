@@ -143,5 +143,100 @@ class EvalCaseTraceCollectionTests(unittest.TestCase):
         self.assertEqual(by_case["c1"].metrics["value_set_exact"], 1.0)
 
 
+class RunCasePassGatingTests(unittest.TestCase):
+    """pass 门槛只看硬指标：SQL 文本/列别名/浮点精度差异不应造成假 fail。"""
+
+    def _runner(self, state):
+        from text2sql.eval import EvaluationRunner
+
+        return EvaluationRunner(_StubWorkflow(state))
+
+    def _base_state(self, generated_sql, rows):
+        from text2sql.core.models import ExecutionResult, RetrievalHit, TableInfo
+
+        return {
+            "rewritten_query": "各供应商销售额",
+            "retrieval_hits": [
+                RetrievalHit(table=TableInfo(name="order_items"), score=0.9),
+                RetrievalHit(table=TableInfo(name="suppliers"), score=0.8),
+            ],
+            "table_relationship": [],
+            "sql_prompt": "P",
+            "generated_sql": generated_sql,
+            "execution_result": ExecutionResult(
+                columns=tuple(rows[0].keys()) if rows else (),
+                rows=tuple(rows),
+                row_count=len(rows),
+            ),
+            "clarification": None,
+        }
+
+    def test_exact_sql_and_alias_mismatch_still_passes(self):
+        from text2sql.core.models import EvalCase
+
+        case = EvalCase(
+            case_id="supplier",
+            query="各供应商销售额",
+            expected_sql=(
+                "SELECT s.name AS dimension_value, SUM(oi.subtotal) AS metric_value "
+                "FROM order_items oi JOIN suppliers s ON oi.supplier_id = s.supplier_id "
+                "GROUP BY s.name"
+            ),
+            expected_tables=("order_items", "suppliers"),
+            required_sql_keywords=("join", "sum", "group by"),
+            expected_result=({"dimension_value": "甲公司", "metric_value": 100.0},),
+        )
+        # LLM 用了不同别名（中文）、不同 SQL 文本、浮点末位不同，但业务值一致。
+        state = self._base_state(
+            "SELECT suppliers.name AS 供应商, SUM(order_items.subtotal) AS 销售额 "
+            "FROM order_items JOIN suppliers "
+            "ON order_items.supplier_id = suppliers.supplier_id GROUP BY suppliers.name",
+            [{"供应商": "甲公司", "销售额": 100.0000001}],
+        )
+        result = asyncio.run(self._runner(state).run_case(case))
+        self.assertTrue(result.passed, msg=f"errors={result.errors} metrics={result.metrics}")
+        # exact_sql / column_set_match 记录为诊断但不阻断 pass。
+        self.assertEqual(result.metrics["exact_sql"], 0.0)
+        self.assertEqual(result.metrics["value_set_exact"], 1.0)
+
+    def test_missing_execution_still_blocks_pass(self):
+        from text2sql.core.models import EvalCase
+
+        case = EvalCase(
+            case_id="x",
+            query="q",
+            expected_tables=("order_items",),
+            required_sql_keywords=("select",),
+        )
+        state = self._base_state("SELECT 1", [{"m": 1}])
+        state["execution_result"] = None
+        result = asyncio.run(self._runner(state).run_case(case))
+        self.assertFalse(result.passed)
+        self.assertEqual(result.metrics["execution_success"], 0.0)
+
+    def test_table_recall_and_keyword_miss_do_not_block_when_result_correct(self):
+        from text2sql.core.models import EvalCase
+
+        # 端到端口径：检索漏桥接表(skus)、关键词不齐，但结果值正确 → 应 pass；
+        # table_recall/keyword_recall 仅作诊断，反映检索/写法质量，不阻断准确率判定。
+        case = EvalCase(
+            case_id="supplier",
+            query="各供应商销售额",
+            expected_tables=("order_items", "suppliers", "skus"),
+            required_sql_keywords=("join", "sum", "group by", "having"),
+            expected_result=({"dimension_value": "甲公司", "metric_value": 100.0},),
+        )
+        state = self._base_state(
+            "SELECT suppliers.name AS dimension_value, SUM(order_items.subtotal) AS metric_value "
+            "FROM order_items JOIN suppliers "
+            "ON order_items.supplier_id = suppliers.supplier_id GROUP BY suppliers.name",
+            [{"dimension_value": "甲公司", "metric_value": 100.0}],
+        )
+        result = asyncio.run(self._runner(state).run_case(case))
+        self.assertTrue(result.passed, msg=f"errors={result.errors} metrics={result.metrics}")
+        self.assertLess(result.metrics["table_recall"], 1.0)  # 检索确实漏 skus（诊断保留）
+        self.assertLess(result.metrics["keyword_recall"], 1.0)  # having 未用（诊断保留）
+
+
 if __name__ == "__main__":
     unittest.main()
