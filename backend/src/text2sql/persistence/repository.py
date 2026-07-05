@@ -60,6 +60,29 @@ class EvalRunRecord:
     run_at: datetime | None = None
 
 
+@dataclass
+class EvalCaseResultRecord:
+    """一个评测用例的逐环节 trace 记录；与 ORM 解耦，便于报告/回溯复用。"""
+
+    run_id: int
+    case_id: str
+    query: str
+    rewritten_query: str = ""
+    passed: bool = False
+    retrieval_hits: list = field(default_factory=list)
+    table_relationship: list = field(default_factory=list)
+    few_shot_examples: list = field(default_factory=list)
+    prompt: str | None = None
+    generated_sql: str | None = None
+    execution_rows: list = field(default_factory=list)
+    row_count: int | None = None
+    clarification: dict | None = None
+    metrics: dict = field(default_factory=dict)
+    errors: list = field(default_factory=list)
+    id: int | None = None
+    created_at: datetime | None = None
+
+
 class HistoryRepository(Protocol):
     """会话与历史的持久化契约。"""
 
@@ -288,11 +311,15 @@ class SqlAlchemyHistoryRepository:
 
 
 class EvalRunRepository(Protocol):
-    """评测运行的持久化契约。"""
+    """评测运行的持久化契约（聚合 + 逐 case trace）。"""
 
     def record_run(self, total: int, passed: int, pass_rate: float, metrics: dict) -> EvalRunRecord: ...
 
     def list_runs(self) -> list[EvalRunRecord]: ...
+
+    def record_case_result(self, record: EvalCaseResultRecord) -> EvalCaseResultRecord: ...
+
+    def list_case_results(self, run_id: int) -> list[EvalCaseResultRecord]: ...
 
 
 class InMemoryEvalRunRepository:
@@ -300,7 +327,9 @@ class InMemoryEvalRunRepository:
 
     def __init__(self) -> None:
         self._runs: list[EvalRunRecord] = []
+        self._case_results: list[EvalCaseResultRecord] = []
         self._id_seq = itertools.count(1)
+        self._case_id_seq = itertools.count(1)
 
     def record_run(self, total: int, passed: int, pass_rate: float, metrics: dict) -> EvalRunRecord:
         record = EvalRunRecord(
@@ -317,6 +346,16 @@ class InMemoryEvalRunRepository:
     def list_runs(self) -> list[EvalRunRecord]:
         # 最近一次运行排最前，便于对比。
         return sorted(self._runs, key=lambda r: (r.run_at, r.id), reverse=True)
+
+    def record_case_result(self, record: EvalCaseResultRecord) -> EvalCaseResultRecord:
+        record.id = next(self._case_id_seq)
+        record.created_at = record.created_at or datetime.utcnow()
+        self._case_results.append(record)
+        return record
+
+    def list_case_results(self, run_id: int) -> list[EvalCaseResultRecord]:
+        rows = [row for row in self._case_results if row.run_id == run_id]
+        return sorted(rows, key=lambda row: row.id)
 
 
 class SqlAlchemyEvalRunRepository:
@@ -367,3 +406,66 @@ class SqlAlchemyEvalRunRepository:
                 )
                 for row in rows
             ]
+
+    def record_case_result(self, record: EvalCaseResultRecord) -> EvalCaseResultRecord:
+        from text2sql.persistence.models import EvalCaseResult
+
+        with self._session_factory() as session:
+            row = EvalCaseResult(
+                run_id=record.run_id,
+                case_id=record.case_id,
+                query=record.query,
+                rewritten_query=record.rewritten_query,
+                passed=int(bool(record.passed)),
+                retrieval_hits=record.retrieval_hits,
+                table_relationship=record.table_relationship,
+                few_shot_examples=record.few_shot_examples,
+                prompt=record.prompt,
+                generated_sql=record.generated_sql,
+                execution_rows=record.execution_rows,
+                row_count=record.row_count,
+                clarification=record.clarification,
+                metrics=record.metrics,
+                errors=record.errors,
+                created_at=record.created_at or datetime.utcnow(),
+            )
+            session.add(row)
+            session.commit()
+            record.id = row.id
+            record.created_at = row.created_at
+        return record
+
+    def list_case_results(self, run_id: int) -> list[EvalCaseResultRecord]:
+        from sqlalchemy import select
+
+        from text2sql.persistence.models import EvalCaseResult
+
+        with self._session_factory() as session:
+            rows = session.execute(
+                select(EvalCaseResult)
+                .where(EvalCaseResult.run_id == run_id)
+                .order_by(EvalCaseResult.id.asc())
+            ).scalars().all()
+            return [self._to_case_record(row) for row in rows]
+
+    @staticmethod
+    def _to_case_record(row) -> EvalCaseResultRecord:
+        return EvalCaseResultRecord(
+            run_id=row.run_id,
+            case_id=row.case_id,
+            query=row.query,
+            rewritten_query=row.rewritten_query,
+            passed=bool(row.passed),
+            retrieval_hits=row.retrieval_hits or [],
+            table_relationship=row.table_relationship or [],
+            few_shot_examples=row.few_shot_examples or [],
+            prompt=row.prompt,
+            generated_sql=row.generated_sql,
+            execution_rows=row.execution_rows or [],
+            row_count=row.row_count,
+            clarification=row.clarification,
+            metrics=row.metrics or {},
+            errors=row.errors or [],
+            id=row.id,
+            created_at=row.created_at,
+        )
