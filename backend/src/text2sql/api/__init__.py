@@ -17,6 +17,7 @@ from text2sql.accuracy.schema_semantics import SchemaSemantics
 from text2sql.api.errors import build_error, register_exception_handlers
 from text2sql.api.rate_limit import RateLimitMiddleware, build_rate_limiter
 from text2sql.config import Settings
+from text2sql.config.domain_profile import DomainProfile, set_active_domain_profile
 from text2sql.core.context import ConversationMemory
 from text2sql.core.graph import Text2SQLWorkflow
 from text2sql.core.models import to_plain
@@ -174,12 +175,17 @@ def create_app() -> "FastAPI":
         )
     # 默认内存 repository，保证未触发 startup（如单元测试）时端点仍可用、可注入替换。
     app.state.history_repository = InMemoryHistoryRepository()
+    app.state.domain_profile = DomainProfile.default()
 
     @app.on_event("startup")
     async def startup() -> None:
         global workflow
         # 默认指向样例库；生产环境通过 TEXT2SQL_DATABASE_URL 接真实数据源。
         settings = Settings()
+        # 领域配置先加载并激活；few-shot/检索分词会消费这份配置。
+        domain_profile = DomainProfile.from_yaml(settings.domain_profile_path)
+        set_active_domain_profile(domain_profile)
+        app.state.domain_profile = domain_profile
         # 加载 schema 语义元数据（中文别名/枚举字典），文件缺失时自动降级为空。
         semantics = SchemaSemantics.from_yaml(settings.schema_metadata_path)
         # 加载 few-shot 种子示例库，文件缺失时自动降级为空库。
@@ -194,6 +200,7 @@ def create_app() -> "FastAPI":
             few_shot_store=few_shot_store,
             few_shot_top_k=settings.few_shot_top_k,
             sql_repair_max_retries=settings.sql_repair_max_retries,
+            domain_profile=domain_profile,
         )
 
     @app.post("/query")
@@ -223,6 +230,12 @@ def create_app() -> "FastAPI":
     async def healthz():
         # 轻量存活探针：仅表示进程可服务，故被限流豁免。
         return {"status": "ok"}
+
+    @app.get("/config")
+    async def config(request: Request):
+        # 前端用该配置展示场景化示例问题；失败时前端仍有本地默认示例兜底。
+        domain_profile = getattr(request.app.state, "domain_profile", DomainProfile.default())
+        return domain_profile.public_config()
 
     @app.get("/sessions")
     async def list_sessions(request: Request):

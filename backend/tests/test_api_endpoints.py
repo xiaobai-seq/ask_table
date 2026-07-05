@@ -45,6 +45,17 @@ class ApiEndpointsTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "ok"})
 
+    def test_config_shape(self):
+        client, _ = self._client()
+        response = client.get("/config")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(
+            set(payload),
+            {"domain_profile", "description", "example_queries", "clarification_options"},
+        )
+        self.assertIn("按月份统计订单金额趋势", payload["example_queries"])
+
     def test_list_sessions_shape(self):
         client, _ = self._client()
         response = client.get("/sessions")

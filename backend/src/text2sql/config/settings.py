@@ -44,6 +44,8 @@ if _HAS_PYDANTIC_SETTINGS:
         # 准确率增强资源：schema 语义元数据与 few-shot 种子库（缺失时安全降级）。
         schema_metadata_path: str = "./examples/schema_metadata.yaml"
         few_shot_seed_path: str = "./examples/few_shot_seed.jsonl"
+        # 领域配置：业务同义词、字段角色、规则意图词、澄清选项和前端示例。
+        domain_profile_path: str = "./examples/domain_profile.yaml"
 
 else:
 
@@ -69,4 +71,7 @@ else:
             )
             self.few_shot_seed_path = os.getenv(
                 "TEXT2SQL_FEW_SHOT_SEED_PATH", "./examples/few_shot_seed.jsonl"
+            )
+            self.domain_profile_path = os.getenv(
+                "TEXT2SQL_DOMAIN_PROFILE_PATH", "./examples/domain_profile.yaml"
             )

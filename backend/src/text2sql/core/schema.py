@@ -11,6 +11,7 @@ import functools
 import sqlite3
 from pathlib import Path
 
+from text2sql.config.domain_profile import get_domain_profile
 from text2sql.core.models import ColumnInfo, ForeignKeyInfo, TableInfo
 
 
@@ -152,46 +153,22 @@ def safe_count(connection: sqlite3.Connection, table_name: str) -> int | None:
 
 
 def infer_table_comment(name: str) -> str:
-    """在没有数据字典时，根据表名推断一点中文业务描述用于召回。"""
+    """在没有数据字典时，根据领域配置推断一点业务描述用于召回。"""
 
-    lowered = name.lower()
-    if "order" in lowered:
-        return "订单 交易 销售 明细"
-    if "customer" in lowered or "user" in lowered:
-        return "客户 用户 买家"
-    if "product" in lowered or "sku" in lowered:
-        return "商品 产品 SKU"
-    if "employee" in lowered or "staff" in lowered:
-        return "员工 组织 架构 层级"
-    if "region" in lowered:
-        return "地区 区域 城市"
-    return name.replace("_", " ")
+    return get_domain_profile().schema_table_comment(name)
 
 
 def infer_table_tags(name: str) -> tuple[str, ...]:
     """根据表名打粗粒度业务标签。"""
 
-    lowered = name.lower()
-    tags: list[str] = []
-    for keyword in ("order", "sales", "customer", "product", "employee", "region"):
-        if keyword in lowered:
-            tags.append(keyword)
-    return tuple(tags)
+    return get_domain_profile().schema_table_tags(name)
 
 
 def infer_column_tags(name: str, data_type: str) -> tuple[str, ...]:
     """根据字段名和类型打 time/metric/key/dimension 等语义标签。"""
 
-    lowered = f"{name} {data_type}".lower()
-    tags: list[str] = []
-    if any(word in lowered for word in ("date", "time", "created", "month", "year")):
-        tags.append("time")
-    if any(word in lowered for word in ("amount", "price", "gmv", "revenue", "total")):
-        tags.append("metric")
-    if any(word in lowered for word in ("count", "qty", "quantity", "number")):
-        tags.append("metric")
-    if any(word in lowered for word in ("id", "key")):
-        tags.append("key")
-    if any(word in lowered for word in ("name", "category", "type", "status", "region", "city")):
-        tags.append("dimension")
-    return tuple(tags)
+    return get_domain_profile().schema_column_tags(name, data_type)
+
+
+def clear_schema_cache() -> None:
+    inspect_sqlite_database.cache_clear()

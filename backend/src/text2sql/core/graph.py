@@ -20,6 +20,7 @@ from typing import AsyncIterator
 
 from text2sql.accuracy.few_shot import FewShotStore
 from text2sql.accuracy.schema_semantics import SchemaSemantics
+from text2sql.config.domain_profile import DomainProfile, get_domain_profile, set_active_domain_profile
 from text2sql.core.clarification import AmbiguityDetector
 from text2sql.core.context import ConversationMemory
 from text2sql.core.executor import QueryExecutor
@@ -68,7 +69,10 @@ class Text2SQLWorkflow:
         few_shot_top_k: int = 3,
         sql_repair_max_retries: int = 2,
         ambiguity_detector: AmbiguityDetector | None = None,
+        domain_profile: DomainProfile | None = None,
     ) -> None:
+        self.domain_profile = domain_profile or get_domain_profile()
+        set_active_domain_profile(self.domain_profile)
         # schema 可以由调用方直接注入，也可以从数据库连接动态 introspect。
         # 测试里常直接传 tables；API/CLI 则通常走 database_url_or_path。
         if tables is None:
@@ -92,12 +96,13 @@ class Text2SQLWorkflow:
             semantics=self.schema_semantics,
             few_shot_store=few_shot_store,
             few_shot_top_k=few_shot_top_k,
+            domain_profile=self.domain_profile,
         )
         # 默认使用线上保守门槛；评测可注入 AmbiguityDetector.for_evaluation() 收紧触发。
-        self.ambiguity_detector = ambiguity_detector or AmbiguityDetector()
+        self.ambiguity_detector = ambiguity_detector or AmbiguityDetector(domain_profile=self.domain_profile)
         self.executor = QueryExecutor(database_url_or_path, tables) if database_url_or_path else None
         self.summarizer = DataInsightSummarizer(llm_provider)
-        self.chart_recommender = ChartRecommender()
+        self.chart_recommender = ChartRecommender(self.domain_profile)
         # SQL 自修复重试上限：执行报错时最多回 LLM 重生成的次数，默认 2（取自 settings）。
         self.sql_repair_max_retries = sql_repair_max_retries
         self.graph = self._build_graph()
