@@ -21,6 +21,9 @@ from text2sql.core.graph import Text2SQLWorkflow
 from text2sql.core.models import EvalCase, EvalResult, to_plain
 from text2sql.core.sql_validator import normalize_sql
 
+# 逐 case trace 落盘时执行结果最多保留的样例行数，避免大结果集撑爆存储。
+_TRACE_MAX_ROWS = 20
+
 
 def _row_signature(row: dict[str, Any]) -> frozenset[tuple[str, str]]:
     """把一行规整为可哈希签名：键 + 字符串化后的值，便于做多重集比对。
@@ -87,12 +90,14 @@ class EvaluationRunner:
         sql = state.get("generated_sql")
         errors: list[str] = []
         metrics: dict[str, float] = {}
+        # 全环节 trace 在跑完 workflow 后统一采集，供报告与 MySQL 回溯复用。
+        trace = self._build_case_trace(case, state)
 
         if state.get("clarification"):
             # 有些 case 预期就是澄清问题，例如含糊输入，不应算失败。
             if case.allow_clarification:
                 metrics["clarification"] = 1.0
-                return EvalResult(case.case_id, True, metrics, sql)
+                return EvalResult(case.case_id, True, metrics, sql, trace=trace)
             errors.append("Unexpected clarification")
 
         expected_tables = set(case.expected_tables)
@@ -130,7 +135,48 @@ class EvaluationRunner:
                 errors.append("Result set mismatch")
 
         passed = not errors and all(value >= 1.0 for value in metrics.values())
-        return EvalResult(case.case_id, passed, metrics, sql, tuple(errors))
+        return EvalResult(case.case_id, passed, metrics, sql, tuple(errors), trace=trace)
+
+    def _build_case_trace(self, case: EvalCase, state: dict[str, Any]) -> dict[str, Any]:
+        """从 workflow 最终 state 采集逐环节 trace（检索/prompt/执行样例等）。"""
+
+        execution = state.get("execution_result")
+        hits = state.get("retrieval_hits", [])
+        has_exec = bool(execution and not execution.error)
+        rewritten = state.get("rewritten_query", "")
+        clarification = state.get("clarification")
+        return {
+            "query": case.query,
+            "rewritten_query": rewritten,
+            "retrieval_hits": [
+                {"table": hit.table.name, "score": hit.score, "rerank_score": hit.rerank_score}
+                for hit in hits
+            ],
+            "table_relationship": [to_plain(path) for path in state.get("table_relationship", [])],
+            "few_shot_examples": self._collect_few_shot(rewritten or case.query),
+            "prompt": state.get("sql_prompt"),
+            "generated_sql": state.get("generated_sql"),
+            # 只截断落前若干行，避免大结果集撑爆存储；总行数另由 row_count 记录。
+            "execution_rows": (
+                [dict(row) for row in execution.rows[:_TRACE_MAX_ROWS]] if has_exec else []
+            ),
+            "row_count": execution.row_count if execution else None,
+            "execution_error": execution.error if execution else None,
+            "clarification": to_plain(clarification) if clarification else None,
+        }
+
+    def _collect_few_shot(self, query: str) -> list[Any]:
+        """复用生成器的 few-shot 检索，记录本 case 命中的示例（幂等，仅评测使用）。"""
+
+        generator = getattr(self.workflow, "sql_generator", None)
+        store = getattr(generator, "few_shot_store", None)
+        if store is None:
+            return []
+        try:
+            top_k = getattr(generator, "few_shot_top_k", 3)
+            return [to_plain(example) for example in store.search(query, top_k)]
+        except Exception:  # pragma: no cover - few-shot 检索失败不应中断评测
+            return []
 
     async def run(self, cases: list[EvalCase]) -> list[EvalResult]:
         return [await self.run_case(case) for case in cases]
@@ -197,6 +243,35 @@ def persist_eval_run(repository, results: list[EvalResult]):
     )
 
 
+def persist_case_results(repository, run_id: int, results: list[EvalResult]):
+    """把逐 case trace 落 eval_case_results（关联 run_id），返回落库记录列表。"""
+
+    from text2sql.persistence.repository import EvalCaseResultRecord
+
+    records = []
+    for result in results:
+        trace = result.trace or {}
+        record = EvalCaseResultRecord(
+            run_id=run_id,
+            case_id=result.case_id,
+            query=trace.get("query", ""),
+            rewritten_query=trace.get("rewritten_query", ""),
+            passed=result.passed,
+            retrieval_hits=trace.get("retrieval_hits", []),
+            table_relationship=trace.get("table_relationship", []),
+            few_shot_examples=trace.get("few_shot_examples", []),
+            prompt=trace.get("prompt"),
+            generated_sql=result.generated_sql,
+            execution_rows=trace.get("execution_rows", []),
+            row_count=trace.get("row_count"),
+            clarification=trace.get("clarification"),
+            metrics=dict(result.metrics),
+            errors=list(result.errors),
+        )
+        records.append(repository.record_case_result(record))
+    return records
+
+
 def _build_eval_run_repository(settings: "Settings"):
     """构建 eval_runs repository：可用 SQLAlchemy 则落库，否则降级内存。"""
 
@@ -246,8 +321,10 @@ def main() -> None:
     cases = load_cases(args.cases)
     results = asyncio.run(EvaluationRunner(workflow).run(cases))
     write_report(args.report, results)
-    # 评测聚合结果落 eval_runs，便于多次运行做趋势对比（缺依赖时降级内存、不报错）。
-    record = persist_eval_run(_build_eval_run_repository(settings), results)
+    # 聚合结果落 eval_runs、逐 case trace 落 eval_case_results，便于趋势对比与逐环节回溯。
+    repository = _build_eval_run_repository(settings)
+    record = persist_eval_run(repository, results)
+    persist_case_results(repository, record.id, results)
     passed = sum(1 for result in results if result.passed)
     print(f"pass_rate={passed}/{len(results)} report={args.report} eval_run_id={record.id}")
 
