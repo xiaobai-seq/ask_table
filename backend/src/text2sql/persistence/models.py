@@ -90,3 +90,31 @@ if _HAS_SQLALCHEMY:
         passed: Mapped[int] = mapped_column(Integer, default=0)
         pass_rate: Mapped[float] = mapped_column(Float, default=0.0)
         metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    class EvalCaseResult(Base):
+        """评测逐 case 结果 + 全环节 trace：关联一次 eval_run，支持事后回溯。"""
+
+        __tablename__ = "eval_case_results"
+
+        id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+        run_id: Mapped[int] = mapped_column(
+            Integer, ForeignKey("eval_runs.id", ondelete="CASCADE"), index=True
+        )
+        case_id: Mapped[str] = mapped_column(String(128), index=True)
+        query: Mapped[str] = mapped_column(Text)
+        rewritten_query: Mapped[str] = mapped_column(Text, default="")
+        passed: Mapped[int] = mapped_column(Integer, default=0)
+        # 各环节结构化 trace：检索命中/关系路径/few-shot/执行样例行/指标/错误均用 JSON 存档。
+        retrieval_hits: Mapped[list | None] = mapped_column(JSON, nullable=True)
+        table_relationship: Mapped[list | None] = mapped_column(JSON, nullable=True)
+        few_shot_examples: Mapped[list | None] = mapped_column(JSON, nullable=True)
+        prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+        generated_sql: Mapped[str | None] = mapped_column(Text, nullable=True)
+        execution_rows: Mapped[list | None] = mapped_column(JSON, nullable=True)
+        row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+        clarification: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+        metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+        errors: Mapped[list | None] = mapped_column(JSON, nullable=True)
+        created_at: Mapped[datetime] = mapped_column(
+            DateTime, default=datetime.utcnow, index=True
+        )

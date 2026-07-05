@@ -20,7 +20,7 @@ from text2sql.config import Settings
 from text2sql.config.domain_profile import DomainProfile, set_active_domain_profile
 from text2sql.core.context import ConversationMemory
 from text2sql.core.graph import Text2SQLWorkflow
-from text2sql.core.models import to_plain
+from text2sql.core.models import strip_trace_only_fields, to_plain
 from text2sql.persistence.repository import (
     HistoryRecord,
     InMemoryHistoryRepository,
@@ -284,7 +284,12 @@ async def stream_query(
         yield sse("task", {"task_id": task_id, "status": "started"})
         async for node_name, partial in text2sql_workflow.astream(query, session_id, cancel_event):
             # partial 是单个节点新增的状态，前端可以按 node 字段增量刷新进度。
-            payload = {"task_id": task_id, "node": node_name, "data": to_plain(partial)}
+            # 剔除仅供评测 trace 的字段（如 sql_prompt），保持线上 SSE 增量不变。
+            payload = {
+                "task_id": task_id,
+                "node": node_name,
+                "data": to_plain(strip_trace_only_fields(partial)),
+            }
             yield sse(node_name, payload)
             if node_name == "cancelled":
                 return

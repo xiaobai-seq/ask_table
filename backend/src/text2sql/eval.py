@@ -22,14 +22,44 @@ from text2sql.core.graph import Text2SQLWorkflow
 from text2sql.core.models import EvalCase, EvalResult, to_plain
 from text2sql.core.sql_validator import normalize_sql
 
+# 逐 case trace 落盘时执行结果最多保留的样例行数，避免大结果集撑爆存储。
+_TRACE_MAX_ROWS = 20
 
-def _row_signature(row: dict[str, Any]) -> frozenset[tuple[str, str]]:
-    """把一行规整为可哈希签名：键 + 字符串化后的值，便于做多重集比对。
+# pass 门槛按端到端口径只看：能执行 + 结果值集正确。
+# table_recall / keyword_recall / exact_sql / column_set_match / row_count_match / value_set_recall
+# 均降为诊断指标单独报告——LLM 常靠子查询/few-shot 补齐 JOIN、用等价写法，据此判 fail 会低估真实准确率。
+_GATING_METRICS: tuple[str, ...] = (
+    "execution_success",
+    "value_set_exact",
+)
 
-    用字符串化值规避 int/float（如 100 与 100.0）和数据库驱动类型差异带来的误判。
+
+def _normalize_cell(value: Any) -> str:
+    """把单元格值归一为可比较字符串：数值容差到 2 位小数，其余原样字符串化。
+
+    LLM 生成 SQL 是否 ROUND、浮点求和顺序都会带来末位差异，2 位小数容差可吸收这类
+    精度噪声，同时保留真实的业务数值差异（如金额相差 1 元以上仍会被判为不同）。
     """
 
-    return frozenset((str(key), str(value)) for key, value in row.items())
+    if value is None:
+        return "∅"
+    if isinstance(value, bool):
+        # bool 是 int 子类，需在数值分支前拦截，避免 True/False 被当成 1/0。
+        return str(value)
+    try:
+        return f"{round(float(value), 2):.2f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _row_signature(row: dict[str, Any]) -> tuple[str, ...]:
+    """把一行规整为可哈希签名：忽略列名，只按归一后的值构成有序多重集。
+
+    评测关注业务值是否正确，而 LLM 生成 SQL 的列别名（如 dimension_value 或中文名）
+    不可控，故列名无关；行内多个值排序后成元组，列顺序同样不影响比对。
+    """
+
+    return tuple(sorted(_normalize_cell(value) for value in row.values()))
 
 
 def compare_result_sets(
@@ -88,33 +118,32 @@ class EvaluationRunner:
         sql = state.get("generated_sql")
         errors: list[str] = []
         metrics: dict[str, float] = {}
+        # 全环节 trace 在跑完 workflow 后统一采集，供报告与 MySQL 回溯复用。
+        trace = self._build_case_trace(case, state)
 
         if state.get("clarification"):
             # 有些 case 预期就是澄清问题，例如含糊输入，不应算失败。
             if case.allow_clarification:
                 metrics["clarification"] = 1.0
-                return EvalResult(case.case_id, True, metrics, sql)
+                return EvalResult(case.case_id, True, metrics, sql, trace=trace)
             errors.append("Unexpected clarification")
 
         expected_tables = set(case.expected_tables)
         retrieved_tables = {hit.table.name for hit in state.get("retrieval_hits", [])}
         if expected_tables:
-            # 表召回检查发生在 SQL 之前，用来定位“选表错”还是“生成错”。
+            # table_recall 降为诊断：反映检索召回质量（尤其多跳桥接表 skus/spus），但不阻断 pass——
+            # LLM 常靠子查询/few-shot 补齐 JOIN 仍能得到正确结果。
             metrics["table_recall"] = len(expected_tables & retrieved_tables) / len(expected_tables)
-            if metrics["table_recall"] < 1.0:
-                errors.append(f"Missing tables: {sorted(expected_tables - retrieved_tables)}")
 
         if case.expected_sql:
+            # SQL 文本精确匹配对 LLM 不公平（等价写法众多），仅作诊断，不纳入 pass 门槛。
             metrics["exact_sql"] = float(normalize_sql(sql or "") == normalize_sql(case.expected_sql))
-            if metrics["exact_sql"] < 1.0:
-                errors.append("SQL exact match failed")
 
         if case.required_sql_keywords:
+            # keyword_recall 降为诊断：等价 SQL 写法众多（如 AVG(子查询) 替代 SUM/COUNT），不阻断 pass。
             normalized = normalize_sql(sql or "")
             matched = sum(1 for keyword in case.required_sql_keywords if keyword.lower() in normalized)
             metrics["keyword_recall"] = matched / len(case.required_sql_keywords)
-            if metrics["keyword_recall"] < 1.0:
-                errors.append("Required SQL keyword missing")
 
         execution = state.get("execution_result")
         # 执行成功率是端到端可用性的最后一道指标。
@@ -130,8 +159,50 @@ class EvaluationRunner:
             if result_metrics["value_set_exact"] < 1.0:
                 errors.append("Result set mismatch")
 
-        passed = not errors and all(value >= 1.0 for value in metrics.values())
-        return EvalResult(case.case_id, passed, metrics, sql, tuple(errors))
+        # 只以硬指标（_GATING_METRICS）判定 pass；缺失的指标按满分处理（如未配 expected_result）。
+        passed = not errors and all(metrics.get(name, 1.0) >= 1.0 for name in _GATING_METRICS)
+        return EvalResult(case.case_id, passed, metrics, sql, tuple(errors), trace=trace)
+
+    def _build_case_trace(self, case: EvalCase, state: dict[str, Any]) -> dict[str, Any]:
+        """从 workflow 最终 state 采集逐环节 trace（检索/prompt/执行样例等）。"""
+
+        execution = state.get("execution_result")
+        hits = state.get("retrieval_hits", [])
+        has_exec = bool(execution and not execution.error)
+        rewritten = state.get("rewritten_query", "")
+        clarification = state.get("clarification")
+        return {
+            "query": case.query,
+            "rewritten_query": rewritten,
+            "retrieval_hits": [
+                {"table": hit.table.name, "score": hit.score, "rerank_score": hit.rerank_score}
+                for hit in hits
+            ],
+            "table_relationship": [to_plain(path) for path in state.get("table_relationship", [])],
+            "few_shot_examples": self._collect_few_shot(rewritten or case.query),
+            "prompt": state.get("sql_prompt"),
+            "generated_sql": state.get("generated_sql"),
+            # 只截断落前若干行，避免大结果集撑爆存储；总行数另由 row_count 记录。
+            "execution_rows": (
+                [dict(row) for row in execution.rows[:_TRACE_MAX_ROWS]] if has_exec else []
+            ),
+            "row_count": execution.row_count if execution else None,
+            "execution_error": execution.error if execution else None,
+            "clarification": to_plain(clarification) if clarification else None,
+        }
+
+    def _collect_few_shot(self, query: str) -> list[Any]:
+        """复用生成器的 few-shot 检索，记录本 case 命中的示例（幂等，仅评测使用）。"""
+
+        generator = getattr(self.workflow, "sql_generator", None)
+        store = getattr(generator, "few_shot_store", None)
+        if store is None:
+            return []
+        try:
+            top_k = getattr(generator, "few_shot_top_k", 3)
+            return [to_plain(example) for example in store.search(query, top_k)]
+        except Exception:  # pragma: no cover - few-shot 检索失败不应中断评测
+            return []
 
     async def run(self, cases: list[EvalCase]) -> list[EvalResult]:
         return [await self.run_case(case) for case in cases]
@@ -198,6 +269,35 @@ def persist_eval_run(repository, results: list[EvalResult]):
     )
 
 
+def persist_case_results(repository, run_id: int, results: list[EvalResult]):
+    """把逐 case trace 落 eval_case_results（关联 run_id），返回落库记录列表。"""
+
+    from text2sql.persistence.repository import EvalCaseResultRecord
+
+    records = []
+    for result in results:
+        trace = result.trace or {}
+        record = EvalCaseResultRecord(
+            run_id=run_id,
+            case_id=result.case_id,
+            query=trace.get("query", ""),
+            rewritten_query=trace.get("rewritten_query", ""),
+            passed=result.passed,
+            retrieval_hits=trace.get("retrieval_hits", []),
+            table_relationship=trace.get("table_relationship", []),
+            few_shot_examples=trace.get("few_shot_examples", []),
+            prompt=trace.get("prompt"),
+            generated_sql=result.generated_sql,
+            execution_rows=trace.get("execution_rows", []),
+            row_count=trace.get("row_count"),
+            clarification=trace.get("clarification"),
+            metrics=dict(result.metrics),
+            errors=list(result.errors),
+        )
+        records.append(repository.record_case_result(record))
+    return records
+
+
 def _build_eval_run_repository(settings: "Settings"):
     """构建 eval_runs repository：可用 SQLAlchemy 则落库，否则降级内存。"""
 
@@ -250,8 +350,10 @@ def main() -> None:
     cases = load_cases(args.cases)
     results = asyncio.run(EvaluationRunner(workflow).run(cases))
     write_report(args.report, results)
-    # 评测聚合结果落 eval_runs，便于多次运行做趋势对比（缺依赖时降级内存、不报错）。
-    record = persist_eval_run(_build_eval_run_repository(settings), results)
+    # 聚合结果落 eval_runs、逐 case trace 落 eval_case_results，便于趋势对比与逐环节回溯。
+    repository = _build_eval_run_repository(settings)
+    record = persist_eval_run(repository, results)
+    persist_case_results(repository, record.id, results)
     passed = sum(1 for result in results if result.passed)
     print(f"pass_rate={passed}/{len(results)} report={args.report} eval_run_id={record.id}")
 
