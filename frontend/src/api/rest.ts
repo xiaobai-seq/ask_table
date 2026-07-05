@@ -3,6 +3,7 @@
 import { API_BASE_URL } from "./config";
 import type {
   ApiError,
+  AppConfig,
   CancelResponse,
   DeleteSessionResponse,
   HistoryDetail,
@@ -55,4 +56,9 @@ export function getHistoryDetail(id: number): Promise<HistoryDetail> {
 // 删除会话：DELETE /sessions/{id}。
 export function deleteSession(sessionId: string): Promise<DeleteSessionResponse> {
   return request<DeleteSessionResponse>(`/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+}
+
+// 应用配置：GET /config。用于场景化示例问题等轻量 UI 配置。
+export function getAppConfig(): Promise<AppConfig> {
+  return request<AppConfig>(`/config`);
 }

@@ -259,6 +259,13 @@ export interface CancelResponse {
   cancelled: true;
 }
 
+export interface AppConfig {
+  domain_profile: string;
+  description: string;
+  example_queries: string[];
+  clarification_options: string[];
+}
+
 // 统一错误体（契约基础约定）。
 export interface ApiError {
   code: string;
