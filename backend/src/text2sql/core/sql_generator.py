@@ -398,11 +398,14 @@ class PromptedSQLGenerator(DeterministicSQLGenerator):
         hits: list[RetrievalHit],
         relationships: list[RelationshipPath],
         context_block: str = "",
+        prompt: str | None = None,
     ) -> SQLPlan:
         if not self.llm_provider:
             # 默认本地运行不启用 LLM，保证无需 API Key 也能跑通测试。
             return self.generate(query, hits, relationships, context_block)
-        prompt = self.build_prompt(query, hits, relationships, context_block)
+        # prompt 可由上层预构造并透传（用于评测 trace 落盘），避免 LLM 路径重复构造。
+        if prompt is None:
+            prompt = self.build_prompt(query, hits, relationships, context_block)
         try:
             response = await self.llm_provider.complete(prompt)
             plan = parse_llm_sql_plan(response)

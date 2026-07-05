@@ -229,6 +229,8 @@ class AgentState(TypedDict, total=False):
     table_relationship: list[RelationshipPath]
     generated_sql: str | None
     sql_plan: SQLPlan
+    # 生成 SQL 时喂给 LLM 的最终 prompt：仅用于评测 trace 落盘，经 SSE 出口剔除不影响线上。
+    sql_prompt: str
     execution_result: ExecutionResult
     summary: str
     chart_type: ChartType
@@ -250,3 +252,18 @@ def to_plain(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [to_plain(item) for item in value]
     return value
+
+
+# 仅用于评测 trace 落盘的 state 字段：体积大且暴露 prompt，不应出现在线上 SSE 增量里。
+TRACE_ONLY_STATE_FIELDS: tuple[str, ...] = ("sql_prompt",)
+
+
+def strip_trace_only_fields(partial: dict[str, Any]) -> dict[str, Any]:
+    """剔除仅供评测 trace 的 state 字段，保持线上 SSE 行为不变。
+
+    不修改入参：命中时返回过滤后的浅拷贝，未命中则原样返回（零拷贝快路径）。
+    """
+
+    if not any(key in partial for key in TRACE_ONLY_STATE_FIELDS):
+        return partial
+    return {key: value for key, value in partial.items() if key not in TRACE_ONLY_STATE_FIELDS}

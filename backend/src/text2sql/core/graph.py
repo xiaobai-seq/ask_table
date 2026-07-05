@@ -259,18 +259,23 @@ class Text2SQLWorkflow:
         context = self.memory.build_context_block(session_id)
 
         # 传入 rewritten_query、候选表、关系路径和对话上下文，生成器可以选择 LLM 或规则 fallback。
-        plan = await self.sql_generator.agenerate(
-            state.get("rewritten_query") or state["user_query"],
-            state.get("retrieval_hits", []),
-            state.get("table_relationship", []),
-            context,
-        )
+        query = state.get("rewritten_query") or state["user_query"]
+        hits = state.get("retrieval_hits", [])
+        relationships = state.get("table_relationship", [])
+        # 预构造 prompt 落 state 供评测 trace 回溯，并透传给生成器复用（LLM 路径零额外构造）。
+        prompt = self.sql_generator.build_prompt(query, hits, relationships, context)
+        plan = await self.sql_generator.agenerate(query, hits, relationships, context, prompt=prompt)
         # 关键节点结构化日志：带 trace_id 贯穿，便于按链路回溯生成的 SQL。
         logger.info(
             "sql_generated",
             extra={"trace_id": state.get("trace_id"), "chart_type": plan.chart_type},
         )
-        return {"sql_plan": plan, "generated_sql": plan.sql, "chart_type": plan.chart_type}
+        return {
+            "sql_plan": plan,
+            "generated_sql": plan.sql,
+            "chart_type": plan.chart_type,
+            "sql_prompt": prompt,
+        }
 
     async def execute_sql(self, state: AgentState) -> AgentState:
         # 执行前 QueryExecutor 会先做只读 SQL 和表字段校验。
