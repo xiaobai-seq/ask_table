@@ -323,7 +323,7 @@ class EvalRunRepository(Protocol):
 
 
 class InMemoryEvalRunRepository:
-    """内存实现：供测试与缺 MySQL 时降级。"""
+    """内存实现：供测试与显式开发兜底使用。"""
 
     def __init__(self) -> None:
         self._runs: list[EvalRunRecord] = []

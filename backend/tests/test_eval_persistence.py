@@ -1,7 +1,10 @@
+import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 
 from text2sql.core.models import EvalResult
-from text2sql.eval import persist_eval_run, summarize_results
+from text2sql.eval import _build_eval_run_repository, persist_eval_run, summarize_results
 from text2sql.persistence.repository import InMemoryEvalRunRepository
 
 try:
@@ -74,6 +77,34 @@ class PersistEvalRunTests(unittest.TestCase):
         self.assertAlmostEqual(record.pass_rate, 0.5)
         self.assertIn("table_recall", record.metrics)
         self.assertEqual(repo.list_runs()[0].id, record.id)
+
+
+class EvalRunRepositoryBuilderTests(unittest.TestCase):
+    def test_builder_requires_metadata_database_by_default(self):
+        settings = SimpleNamespace(metadata_database_url="")
+
+        with self.assertRaisesRegex(RuntimeError, "metadata database"):
+            _build_eval_run_repository(settings)
+
+    def test_builder_allows_inmemory_only_when_explicit(self):
+        settings = SimpleNamespace(metadata_database_url="")
+
+        repo = _build_eval_run_repository(settings, allow_inmemory=True)
+
+        self.assertIsInstance(repo, InMemoryEvalRunRepository)
+
+    @unittest.skipUnless(_HAS_SQLALCHEMY, "SQLAlchemy not installed")
+    def test_builder_uses_sqlalchemy_repository_for_metadata_url(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = SimpleNamespace(
+                metadata_database_url=f"sqlite:///{Path(tmpdir) / 'metadata.db'}"
+            )
+
+            repo = _build_eval_run_repository(settings)
+            record = repo.record_run(total=1, passed=1, pass_rate=1.0, metrics={"ok": 1.0})
+
+        self.assertEqual(record.passed, 1)
+        self.assertEqual(record.metrics, {"ok": 1.0})
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import unittest
 from unittest.mock import patch
@@ -72,6 +73,7 @@ class SettingsTest(unittest.TestCase):
             model="qwen-plus",
             api_key="test-key",
             base_http_api_url=base_url,
+            request_timeout_seconds=42,
         )
         fake_response = {
             "output": {"choices": [{"message": {"content": "ok"}}]},
@@ -81,6 +83,7 @@ class SettingsTest(unittest.TestCase):
             self.assertEqual(provider._complete_sync("hello"), "ok")
 
         self.assertEqual(call.call_args.kwargs["base_address"], base_url)
+        self.assertEqual(call.call_args.kwargs["timeout"], 42)
 
     def test_qwen37_provider_uses_multimodal_generation(self):
         base_url = "https://workspace.cn-beijing.maas.aliyuncs.com/api/v1"
@@ -88,6 +91,7 @@ class SettingsTest(unittest.TestCase):
             model="qwen3.7-plus",
             api_key="test-key",
             base_http_api_url=base_url,
+            request_timeout_seconds=43,
         )
         fake_response = {
             "output": {
@@ -101,10 +105,25 @@ class SettingsTest(unittest.TestCase):
             self.assertEqual(provider._complete_sync("hello"), "ok")
 
         self.assertEqual(call.call_args.kwargs["base_address"], base_url)
+        self.assertEqual(call.call_args.kwargs["timeout"], 43)
         self.assertEqual(
             call.call_args.kwargs["messages"][1]["content"],
             [{"text": "hello"}],
         )
+
+    def test_dashscope_provider_complete_enforces_async_timeout(self):
+        provider = DashScopeLLMProvider(
+            model="qwen3.7-plus",
+            api_key="test-key",
+            request_timeout_seconds=0.01,
+        )
+
+        def slow_to_thread(*args, **kwargs):
+            return asyncio.sleep(1, result="late")
+
+        with patch("text2sql.core.llm.asyncio.to_thread", new=slow_to_thread):
+            with self.assertRaises(asyncio.TimeoutError):
+                asyncio.run(provider.complete("hello"))
 
 
 if __name__ == "__main__":

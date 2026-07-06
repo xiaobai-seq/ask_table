@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -19,8 +20,9 @@ from text2sql.config import Settings
 from text2sql.config.domain_profile import DomainProfile, set_active_domain_profile
 from text2sql.core.clarification import AmbiguityDetector
 from text2sql.core.graph import Text2SQLWorkflow
-from text2sql.core.models import EvalCase, EvalResult, to_plain
+from text2sql.core.models import EvalCase, EvalResult, RetrievalHit, to_plain
 from text2sql.core.sql_validator import normalize_sql
+from text2sql.core.summarizer import DataInsightSummarizer
 
 # 逐 case trace 落盘时执行结果最多保留的样例行数，避免大结果集撑爆存储。
 _TRACE_MAX_ROWS = 20
@@ -94,6 +96,52 @@ def compare_result_sets(
     return metrics
 
 
+def compare_table_retrieval(
+    expected_tables: list[str] | tuple[str, ...],
+    retrieved_tables: list[str] | tuple[str, ...],
+) -> dict[str, float]:
+    """表级检索指标。
+
+    公式：
+    - table_recall@K = |G ∩ R_K| / |G|；
+    - table_precision@K = |G ∩ R_K| / |R_K|；
+    - table_f1@K = 2PR / (P + R)；
+    - table_accuracy = 1{set(R_|G|) == G}，即前金标数量个候选是否刚好命中金标表集。
+
+    其中 G 是金标表集合，R_K 是检索器返回的 top K 表集合。
+    """
+
+    gold = set(expected_tables)
+    retrieved = list(retrieved_tables)
+    metrics: dict[str, float] = {}
+    if not gold:
+        return metrics
+
+    retrieved_set = set(retrieved)
+    matched = len(gold & retrieved_set)
+    recall = matched / len(gold)
+    precision = matched / len(retrieved_set) if retrieved_set else 0.0
+    f1 = (2 * precision * recall / (precision + recall)) if precision + recall else 0.0
+    top_gold_count = set(retrieved[: len(gold)])
+
+    metrics["table_recall"] = recall
+    metrics["table_precision"] = precision
+    metrics["table_f1"] = f1
+    metrics["table_accuracy"] = float(top_gold_count == gold)
+    metrics["table_top1_hit"] = float(bool(retrieved and retrieved[0] in gold))
+    return metrics
+
+
+def _keyword_recall(sql: str | None, keywords: tuple[str, ...]) -> float:
+    """计算 SQL 关键词召回，作为生成诊断指标。"""
+
+    if not keywords:
+        return 1.0
+    normalized = normalize_sql(sql or "")
+    matched = sum(1 for keyword in keywords if keyword.lower() in normalized)
+    return matched / len(keywords)
+
+
 def aggregate_metrics(results: list["EvalResult"]) -> dict[str, float]:
     """跨 case 聚合各指标的平均值，便于报告与趋势对比。"""
 
@@ -109,8 +157,16 @@ def aggregate_metrics(results: list["EvalResult"]) -> dict[str, float]:
 class EvaluationRunner:
     """围绕 Text2SQLWorkflow 的回归评测执行器。"""
 
-    def __init__(self, workflow: Text2SQLWorkflow) -> None:
+    def __init__(
+        self,
+        workflow: Text2SQLWorkflow,
+        *,
+        progress: bool = False,
+        mode_name: str = "e2e",
+    ) -> None:
         self.workflow = workflow
+        self.progress = progress
+        self.mode_name = mode_name
 
     async def run_case(self, case: EvalCase) -> EvalResult:
         # 每个 case 使用独立 session，避免对话记忆在评测样例之间串场。
@@ -128,12 +184,11 @@ class EvaluationRunner:
                 return EvalResult(case.case_id, True, metrics, sql, trace=trace)
             errors.append("Unexpected clarification")
 
-        expected_tables = set(case.expected_tables)
-        retrieved_tables = {hit.table.name for hit in state.get("retrieval_hits", [])}
-        if expected_tables:
-            # table_recall 降为诊断：反映检索召回质量（尤其多跳桥接表 skus/spus），但不阻断 pass——
+        retrieved_tables = [hit.table.name for hit in state.get("retrieval_hits", [])]
+        if case.expected_tables:
+            # 表级指标降为诊断：反映检索召回/排序质量（尤其多跳桥接表 skus/spus），但不阻断 pass——
             # LLM 常靠子查询/few-shot 补齐 JOIN 仍能得到正确结果。
-            metrics["table_recall"] = len(expected_tables & retrieved_tables) / len(expected_tables)
+            metrics.update(compare_table_retrieval(case.expected_tables, retrieved_tables))
 
         if case.expected_sql:
             # SQL 文本精确匹配对 LLM 不公平（等价写法众多），仅作诊断，不纳入 pass 门槛。
@@ -141,9 +196,7 @@ class EvaluationRunner:
 
         if case.required_sql_keywords:
             # keyword_recall 降为诊断：等价 SQL 写法众多（如 AVG(子查询) 替代 SUM/COUNT），不阻断 pass。
-            normalized = normalize_sql(sql or "")
-            matched = sum(1 for keyword in case.required_sql_keywords if keyword.lower() in normalized)
-            metrics["keyword_recall"] = matched / len(case.required_sql_keywords)
+            metrics["keyword_recall"] = _keyword_recall(sql, case.required_sql_keywords)
 
         execution = state.get("execution_result")
         # 执行成功率是端到端可用性的最后一道指标。
@@ -175,7 +228,12 @@ class EvaluationRunner:
             "query": case.query,
             "rewritten_query": rewritten,
             "retrieval_hits": [
-                {"table": hit.table.name, "score": hit.score, "rerank_score": hit.rerank_score}
+                {
+                    "table": hit.table.name,
+                    "score": hit.score,
+                    "rerank_score": hit.rerank_score,
+                    "reasons": list(hit.reasons),
+                }
                 for hit in hits
             ],
             "table_relationship": [to_plain(path) for path in state.get("table_relationship", [])],
@@ -205,7 +263,150 @@ class EvaluationRunner:
             return []
 
     async def run(self, cases: list[EvalCase]) -> list[EvalResult]:
-        return [await self.run_case(case) for case in cases]
+        results: list[EvalResult] = []
+        total = len(cases)
+        for index, case in enumerate(cases, start=1):
+            if self.progress:
+                print(
+                    f"[eval] {self.mode_name} {index}/{total} {case.case_id} start",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            result = await self.run_case(case)
+            if self.progress:
+                status = "PASS" if result.passed else "FAIL"
+                print(
+                    f"[eval] {self.mode_name} {index}/{total} {case.case_id} {status}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            results.append(result)
+        return results
+
+
+class TableRetrievalEvaluationRunner(EvaluationRunner):
+    """只评测 schema 检索，不进入关系解析、SQL 生成和执行。"""
+
+    def __init__(
+        self,
+        workflow: Text2SQLWorkflow,
+        top_k: int = 6,
+        *,
+        progress: bool = False,
+    ) -> None:
+        super().__init__(workflow, progress=progress, mode_name="retrieval")
+        self.top_k = top_k
+
+    async def run_case(self, case: EvalCase) -> EvalResult:
+        hits = self.workflow.retriever.retrieve(case.query, top_k=self.top_k)
+        retrieved_tables = [hit.table.name for hit in hits]
+        metrics = compare_table_retrieval(case.expected_tables, retrieved_tables)
+        errors: list[str] = []
+
+        if not case.expected_tables:
+            errors.append("Missing expected_tables for retrieval evaluation")
+        else:
+            missing = [table for table in case.expected_tables if table not in retrieved_tables]
+            if missing:
+                errors.append(f"Missing tables: {missing}")
+            if metrics.get("table_accuracy", 0.0) < 1.0:
+                errors.append("Top table set mismatch")
+
+        state = {
+            "rewritten_query": case.query,
+            "retrieval_hits": hits,
+            "table_relationship": [],
+            "generated_sql": None,
+            "execution_result": None,
+            "clarification": None,
+        }
+        trace = self._build_case_trace(case, state)
+        trace["mode"] = "retrieval"
+        trace["top_k"] = self.top_k
+        passed = not errors and metrics.get("table_recall", 0.0) >= 1.0 and metrics.get(
+            "table_accuracy", 0.0
+        ) >= 1.0
+        return EvalResult(case.case_id, passed, metrics, None, tuple(errors), trace=trace)
+
+
+class FixedTableEvaluationRunner(EvaluationRunner):
+    """跳过 schema 召回，使用 case.fixed_tables 测 SQL 生成/执行能力。"""
+
+    def __init__(self, workflow: Text2SQLWorkflow, *, progress: bool = False) -> None:
+        super().__init__(workflow, progress=progress, mode_name="fixed-tables")
+
+    async def run_case(self, case: EvalCase) -> EvalResult:
+        fixed_table_names = case.fixed_tables or case.expected_tables
+        metrics: dict[str, float] = {}
+        errors: list[str] = []
+
+        if case.expected_tables:
+            fixed_metrics = compare_table_retrieval(case.expected_tables, fixed_table_names)
+            metrics.update({f"fixed_{name}": value for name, value in fixed_metrics.items()})
+        if not fixed_table_names:
+            errors.append("No fixed_tables configured")
+
+        table_map = {table.name: table for table in getattr(self.workflow, "tables", [])}
+        missing_fixed = [name for name in fixed_table_names if name not in table_map]
+        if missing_fixed:
+            errors.append(f"Fixed tables not found: {missing_fixed}")
+
+        fixed_tables = [table_map[name] for name in fixed_table_names if name in table_map]
+        hits = [
+            RetrievalHit(table=table, score=1.0, reasons=("fixed",))
+            for table in fixed_tables
+        ]
+        relationships = self.workflow.relationship_resolver.paths_for_tables(fixed_tables)
+        prompt = self.workflow.sql_generator.build_prompt(case.query, hits, relationships, "")
+        plan = await self.workflow.sql_generator.agenerate(
+            case.query, hits, relationships, "", prompt=prompt
+        )
+        execution = None
+        if self.workflow.executor and plan.sql:
+            execution = await self.workflow.executor.execute(plan.sql)
+
+        state = {
+            "rewritten_query": case.query,
+            "retrieval_hits": hits,
+            "table_relationship": relationships,
+            "sql_prompt": prompt,
+            "generated_sql": plan.sql,
+            "execution_result": execution,
+            "clarification": None,
+        }
+        trace = self._build_case_trace(case, state)
+        trace["mode"] = "fixed-tables"
+        trace["fixed_tables"] = list(fixed_table_names)
+
+        if case.expected_sql:
+            metrics["exact_sql"] = float(normalize_sql(plan.sql or "") == normalize_sql(case.expected_sql))
+        if case.required_sql_keywords:
+            metrics["keyword_recall"] = _keyword_recall(plan.sql, case.required_sql_keywords)
+
+        metrics["execution_success"] = float(bool(execution and not execution.error))
+        if execution and execution.error:
+            errors.append(f"Execution failed: {execution.error}")
+        elif not execution:
+            errors.append("Execution was not run")
+
+        if case.expected_result is None:
+            metrics["llm_generation_accuracy"] = 0.0
+            errors.append("Missing expected_result for fixed-tables accuracy")
+        else:
+            actual_rows = list(execution.rows) if execution and not execution.error else []
+            result_metrics = compare_result_sets(list(case.expected_result), actual_rows)
+            metrics.update(result_metrics)
+            metrics["llm_generation_accuracy"] = result_metrics["value_set_exact"]
+            metrics["llm_value_recall"] = result_metrics["value_set_recall"]
+            if result_metrics["value_set_exact"] < 1.0:
+                errors.append("Result set mismatch")
+
+        passed = (
+            not errors
+            and all(metrics.get(name, 0.0) >= 1.0 for name in _GATING_METRICS)
+            and metrics.get("llm_generation_accuracy", 0.0) >= 1.0
+        )
+        return EvalResult(case.case_id, passed, metrics, plan.sql, tuple(errors), trace=trace)
 
 
 def load_cases(path: str | Path) -> list[EvalCase]:
@@ -224,6 +425,7 @@ def load_cases(path: str | Path) -> list[EvalCase]:
                 expected_tables=tuple(payload.get("expected_tables", ())),
                 required_sql_keywords=tuple(payload.get("required_sql_keywords", ())),
                 allow_clarification=bool(payload.get("allow_clarification", False)),
+                fixed_tables=tuple(payload.get("fixed_tables", ())),
                 expected_result=(
                     tuple(payload["expected_result"])
                     if payload.get("expected_result") is not None
@@ -247,10 +449,15 @@ def summarize_results(results: list[EvalResult]) -> dict[str, Any]:
     }
 
 
-def write_report(path: str | Path, results: list[EvalResult]) -> None:
+def write_report(
+    path: str | Path,
+    results: list[EvalResult],
+    metadata: dict[str, Any] | None = None,
+) -> None:
     """写出包含整体通过率和逐 case 详情的 JSON 报告。"""
 
     payload = {
+        "metadata": metadata or {},
         "summary": summarize_results(results),
         "results": [to_plain(result) for result in results],
     }
@@ -298,8 +505,26 @@ def persist_case_results(repository, run_id: int, results: list[EvalResult]):
     return records
 
 
-def _build_eval_run_repository(settings: "Settings"):
-    """构建 eval_runs repository：可用 SQLAlchemy 则落库，否则降级内存。"""
+def _redact_database_url(url: str) -> str:
+    """隐藏 URL 密码，避免连接失败时把凭据打印到终端。"""
+
+    if "://" not in url or "@" not in url:
+        return url
+    scheme, rest = url.split("://", 1)
+    userinfo, host = rest.rsplit("@", 1)
+    if ":" not in userinfo:
+        return url
+    username, _password = userinfo.split(":", 1)
+    return f"{scheme}://{username}:***@{host}"
+
+
+def _build_eval_run_repository(settings: "Settings", *, allow_inmemory: bool = False):
+    """构建 eval repository；默认必须落元数据库，只有显式允许才用内存兜底。"""
+
+    def _inmemory_repository():
+        from text2sql.persistence.repository import InMemoryEvalRunRepository
+
+        return InMemoryEvalRunRepository()
 
     try:
         from text2sql.persistence.db import (
@@ -309,17 +534,26 @@ def _build_eval_run_repository(settings: "Settings"):
             init_models,
         )
 
-        if _HAS_SQLALCHEMY and settings.metadata_database_url:
-            from text2sql.persistence.repository import SqlAlchemyEvalRunRepository
+        if not settings.metadata_database_url:
+            raise RuntimeError("TEXT2SQL_METADATA_DATABASE_URL is not configured")
+        if not _HAS_SQLALCHEMY:
+            raise RuntimeError("SQLAlchemy is not installed")
 
-            engine = create_metadata_engine(settings.metadata_database_url)
-            init_models(engine)
-            return SqlAlchemyEvalRunRepository(create_session_factory(engine))
-    except Exception:  # pragma: no cover - 缺依赖/连接失败时降级
-        pass
-    from text2sql.persistence.repository import InMemoryEvalRunRepository
+        from text2sql.persistence.repository import SqlAlchemyEvalRunRepository
 
-    return InMemoryEvalRunRepository()
+        engine = create_metadata_engine(settings.metadata_database_url)
+        init_models(engine)
+        return SqlAlchemyEvalRunRepository(create_session_factory(engine))
+    except Exception as exc:
+        if allow_inmemory:
+            return _inmemory_repository()
+        url = _redact_database_url(getattr(settings, "metadata_database_url", "") or "")
+        detail = f" for {url}" if url else ""
+        raise RuntimeError(
+            "Eval persistence requires a writable metadata database"
+            f"{detail}. Set TEXT2SQL_METADATA_DATABASE_URL to MySQL/SQLite,"
+            " or pass --no-persist for a local-only report."
+        ) from exc
 
 
 def main() -> None:
@@ -329,6 +563,29 @@ def main() -> None:
     parser.add_argument("--db", required=True, help="SQLite db path or SQLAlchemy URL")
     parser.add_argument("--cases", required=True, help="JSONL evaluation cases")
     parser.add_argument("--report", default="eval_report.json")
+    parser.add_argument(
+        "--mode",
+        choices=("e2e", "retrieval", "fixed-tables"),
+        default="e2e",
+        help=(
+            "e2e=完整链路；retrieval=只测表召回/表准确；"
+            "fixed-tables=跳过召回，用 fixed_tables/expected_tables 测 SQL 生成"
+        ),
+    )
+    parser.add_argument("--top-k", type=int, default=6, help="retrieval 模式的表召回 top K")
+    parser.add_argument("--cache-dir", default=".text2sql_cache", help="schema 向量缓存目录")
+    parser.add_argument("--no-persist", action="store_true", help="只写 JSON report，不落 eval_runs")
+    parser.add_argument(
+        "--allow-inmemory-persist",
+        action="store_true",
+        help="开发/测试兜底：元数据库不可用时允许把 eval 结果写入内存仓库",
+    )
+    parser.add_argument("--quiet", action="store_true", help="不输出逐 case 进度")
+    parser.add_argument(
+        "--llm-summary",
+        action="store_true",
+        help="e2e 模式也使用 LLM 生成自然语言总结；默认关闭以避免总结阶段影响 SQL 评测",
+    )
     args = parser.parse_args()
 
     db = args.db if "://" in args.db else f"sqlite:///{args.db}"
@@ -339,6 +596,7 @@ def main() -> None:
     few_shot_store = InMemoryFewShotStore.from_jsonl(settings.few_shot_seed_path)
     workflow = Text2SQLWorkflow(
         database_url_or_path=db,
+        cache_dir=args.cache_dir,
         schema_semantics=semantics,
         few_shot_store=few_shot_store,
         few_shot_top_k=settings.few_shot_top_k,
@@ -347,15 +605,44 @@ def main() -> None:
         ambiguity_detector=AmbiguityDetector.for_evaluation(domain_profile),
         domain_profile=domain_profile,
     )
+    if not args.llm_summary:
+        # Eval 指标只依赖 SQL 执行结果；总结阶段默认走本地摘要，避免 LLM 总结耗时/超时污染评测。
+        workflow.summarizer = DataInsightSummarizer(None)
     cases = load_cases(args.cases)
-    results = asyncio.run(EvaluationRunner(workflow).run(cases))
-    write_report(args.report, results)
-    # 聚合结果落 eval_runs、逐 case trace 落 eval_case_results，便于趋势对比与逐环节回溯。
-    repository = _build_eval_run_repository(settings)
-    record = persist_eval_run(repository, results)
-    persist_case_results(repository, record.id, results)
+    progress = not args.quiet
+    if args.mode == "retrieval":
+        runner = TableRetrievalEvaluationRunner(workflow, top_k=args.top_k, progress=progress)
+    elif args.mode == "fixed-tables":
+        runner = FixedTableEvaluationRunner(workflow, progress=progress)
+    else:
+        runner = EvaluationRunner(workflow, progress=progress)
+    repository = None
+    if not args.no_persist:
+        # 先校验元数据库可用性，避免真实 LLM eval 跑完后才发现无法落库。
+        repository = _build_eval_run_repository(
+            settings, allow_inmemory=args.allow_inmemory_persist
+        )
+    results = asyncio.run(runner.run(cases))
+    write_report(
+        args.report,
+        results,
+        metadata={
+            "mode": args.mode,
+            "top_k": args.top_k,
+            "cases": args.cases,
+            "db": args.db,
+            "cache_dir": args.cache_dir,
+        },
+    )
+
+    record = None
+    if repository is not None:
+        # 聚合结果落 eval_runs、逐 case trace 落 eval_case_results，便于趋势对比与逐环节回溯。
+        record = persist_eval_run(repository, results)
+        persist_case_results(repository, record.id, results)
     passed = sum(1 for result in results if result.passed)
-    print(f"pass_rate={passed}/{len(results)} report={args.report} eval_run_id={record.id}")
+    run_suffix = f" eval_run_id={record.id}" if record else ""
+    print(f"mode={args.mode} pass_rate={passed}/{len(results)} report={args.report}{run_suffix}")
 
 
 if __name__ == "__main__":

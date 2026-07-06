@@ -80,6 +80,19 @@ cd backend
 python3 -m text2sql.eval --db examples/demo.db --cases examples/eval_cases.jsonl --report examples/eval_report.json
 ```
 
+评测 CLI 支持三种模式：`e2e`（默认完整链路）、`retrieval`（只测表召回/表准确）、
+`fixed-tables`（固定金标表，只测 SQL 生成与执行结果准确）。指标公式见
+[`docs/eval-metrics.md`](docs/eval-metrics.md)。真实 LLM 评测可设置
+`TEXT2SQL_LLM_REQUEST_TIMEOUT_SECONDS=60`，避免单条外部请求长时间阻塞；`e2e`
+默认关闭 LLM 自然语言总结，只测 SQL 生成与结果准确，需连总结一起测时加 `--llm-summary`。
+eval 默认把聚合结果和逐 case trace 写入 `TEXT2SQL_METADATA_DATABASE_URL` 指向的元数据库
+（真实评测建议配 MySQL）；元数据库不可用会直接失败。只想生成本地 JSON 报告时加
+`--no-persist`，开发兜底才使用 `--allow-inmemory-persist`。
+本地 `.env` 指向 `127.0.0.1` 时，可先在仓库根目录执行 `./scripts/start-middleware.sh`
+启动 MySQL 容器，再运行 eval。
+召回阶段的领域增强通过 `examples/domain_profile.yaml` 的 `retrieval` 段配置，
+包括表级 boost、字段标签 boost 和关系路径补全；适配新领域优先改 YAML，不改检索代码。
+
 前端（需后端在 `localhost:8000` 运行，dev server 默认把 `/api/*` 代理到后端）：
 
 ```bash
@@ -109,10 +122,40 @@ PYTHONPATH=src python3 -m text2sql.core.ecommerce_data \
 cd backend
 TEXT2SQL_SCHEMA_METADATA_PATH=./examples/ecommerce/schema_metadata.yaml \
 TEXT2SQL_FEW_SHOT_SEED_PATH=./examples/ecommerce/few_shot_seed.jsonl \
+TEXT2SQL_LLM_REQUEST_TIMEOUT_SECONDS=60 \
 PYTHONPATH=src python3 -m text2sql.eval \
   --db examples/ecommerce/ecommerce.db \
   --cases examples/ecommerce/eval_cases.jsonl \
   --report examples/ecommerce/eval_report.json
+```
+
+独立测表召回/表准确：
+
+```bash
+cd backend
+TEXT2SQL_SCHEMA_METADATA_PATH=./examples/ecommerce/schema_metadata.yaml \
+TEXT2SQL_FEW_SHOT_SEED_PATH=./examples/ecommerce/few_shot_seed.jsonl \
+TEXT2SQL_LLM_REQUEST_TIMEOUT_SECONDS=60 \
+PYTHONPATH=src python3 -m text2sql.eval \
+  --db examples/ecommerce/ecommerce.db \
+  --cases examples/ecommerce/eval_cases_table_retrieval.jsonl \
+  --mode retrieval \
+  --cache-dir /tmp/text2sql-eval-cache-retrieval \
+  --report examples/ecommerce/eval_table_retrieval_report.json
+```
+
+固定召回表，只测 SQL 生成准确：
+
+```bash
+cd backend
+TEXT2SQL_SCHEMA_METADATA_PATH=./examples/ecommerce/schema_metadata.yaml \
+TEXT2SQL_FEW_SHOT_SEED_PATH=./examples/ecommerce/few_shot_seed.jsonl \
+PYTHONPATH=src python3 -m text2sql.eval \
+  --db examples/ecommerce/ecommerce.db \
+  --cases examples/ecommerce/eval_cases_fixed_tables.jsonl \
+  --mode fixed-tables \
+  --cache-dir /tmp/text2sql-eval-cache-fixed \
+  --report examples/ecommerce/eval_fixed_tables_report.json
 ```
 
 启动 API 时另设 `TEXT2SQL_DATABASE_URL=sqlite:///./examples/ecommerce/ecommerce.db`，问答即走电商库。

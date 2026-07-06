@@ -3,8 +3,8 @@ from __future__ import annotations
 """领域配置。
 
 DomainProfile 把业务词、字段角色、规则生成器意图词、澄清选项和前端示例问题
-集中到一份可配置对象中。默认配置完整复刻既有 demo/ecommerce 行为；业务场景
-需要变化时，优先通过 TEXT2SQL_DOMAIN_PROFILE_PATH 指向 YAML 覆盖。
+集中到一份可配置对象中。代码内置默认值只保留领域无关的基础规则；demo/ecommerce
+等业务语义放在 YAML profile 中，通过 TEXT2SQL_DOMAIN_PROFILE_PATH 切换。
 """
 
 from copy import deepcopy
@@ -20,38 +20,15 @@ except Exception:  # pragma: no cover
 
 
 DEFAULT_DOMAIN_PROFILE_CONFIG: dict[str, Any] = {
-    "name": "default",
-    "description": "Default cross-domain profile compatible with the built-in demo assets.",
-    "synonyms": {
-        "订单": ["order", "orders", "sales", "交易", "成交"],
-        "销售": ["sales", "amount", "gmv", "revenue", "营收", "收入"],
-        "客户": ["customer", "customers", "user", "用户", "买家"],
-        "商品": ["product", "products", "sku", "item", "货品"],
-        "员工": ["employee", "staff", "member", "组织", "部门"],
-        "金额": ["amount", "price", "payment", "gmv", "revenue"],
-        "时间": ["date", "time", "created", "month", "day", "year"],
-        "日期": ["date", "time", "created", "day"],
-        "月份": ["month", "date", "time", "period"],
-        "月": ["month", "date", "time", "period"],
-        "地区": ["region", "province", "city", "area"],
-        "排名": ["rank", "top", "排序"],
-        "增长": ["growth", "rate", "increase", "环比", "同比"],
-        "趋势": ["trend", "time", "period", "line"],
-        "环比": ["growth", "rate", "lag", "period", "time"],
-        "同比": ["growth", "rate", "lag", "period", "time"],
-    },
+    "name": "base",
+    "description": "Domain-neutral base profile. Business semantics should be supplied by YAML.",
+    "synonyms": {},
     "schema": {
-        "table_comment_rules": [
-            {"contains_any": ["order"], "comment": "订单 交易 销售 明细"},
-            {"contains_any": ["customer", "user"], "comment": "客户 用户 买家"},
-            {"contains_any": ["product", "sku"], "comment": "商品 产品 SKU"},
-            {"contains_any": ["employee", "staff"], "comment": "员工 组织 架构 层级"},
-            {"contains_any": ["region"], "comment": "地区 区域 城市"},
-        ],
-        "table_tag_keywords": ["order", "sales", "customer", "product", "employee", "region"],
+        "table_comment_rules": [],
+        "table_tag_keywords": [],
         "column_tag_keywords": {
             "time": ["date", "time", "created", "month", "year"],
-            "metric": ["amount", "price", "gmv", "revenue", "total", "count", "qty", "quantity", "number"],
+            "metric": ["amount", "value", "total", "count", "qty", "quantity", "number", "metric"],
             "key": ["id", "key"],
             "dimension": ["name", "category", "type", "status", "region", "city"],
         },
@@ -59,32 +36,38 @@ DEFAULT_DOMAIN_PROFILE_CONFIG: dict[str, Any] = {
     "sql": {
         "column_hints": {
             "time": ["date", "time", "created", "month"],
-            "metric": ["amount", "total", "price", "gmv", "revenue", "quantity", "count"],
+            "metric": ["amount", "value", "total", "quantity", "count", "number", "metric"],
             "dimension": ["category", "type", "status", "region", "city", "name"],
             "hierarchy_parent": ["parent", "manager"],
             "display_name": ["name"],
         },
         "intent_terms": {
-            "hierarchy": ["递归", "层级", "上下级", "组织树", "路径"],
+            "hierarchy": ["递归", "层级", "上下级", "路径"],
             "growth": ["环比", "同比", "增长率", "增长", "趋势", "rolling", "滚动"],
             "ranking": ["排名", "排行", "top", "前"],
             "grouping": ["按", "每", "各", "分布", "占比"],
-            "kpi": ["总", "金额", "销售", "收入", "gmv"],
+            "kpi": ["总", "金额", "数量", "指标"],
             "time_metric": ["环比", "同比", "增长", "趋势", "月份", "按月"],
-            "metric": ["金额", "销售", "收入", "gmv", "排名", "top", "前"],
+            "metric": ["金额", "数量", "指标", "排名", "top", "前"],
         },
-        "related_dimension_terms": ["地区", "区域", "城市", "客户", "用户", "商品", "品类", "类别"],
+        "related_dimension_terms": ["维度", "分组", "地区", "区域", "城市"],
         "dimension_candidate_groups": [
+            {"terms": ["维度", "分组"], "columns": ["dimension", "category", "type", "status", "name"]},
             {"terms": ["地区", "区域"], "columns": ["region", "area", "province"]},
             {"terms": ["城市"], "columns": ["city"]},
-            {"terms": ["客户", "用户"], "columns": ["customer_name", "user_name"]},
-            {"terms": ["商品", "品类", "类别"], "columns": ["category", "product_name", "name"]},
         ],
+    },
+    # Retrieval tuning is intentionally configuration-only. Built-in business rules live in
+    # examples/domain_profile.yaml so another domain can swap them without changing code.
+    "retrieval": {
+        "tag_boost_rules": [],
+        "table_boost_rules": [],
+        "relationship_path": {},
     },
     "clarification": {
         "vague_words": ["情况", "数据", "看一下", "分析一下", "表现", "怎么样"],
-        "metric_words": ["金额", "数量", "订单", "客户", "销售", "收入", "增长", "排名", "趋势", "转化"],
-        "options": ["订单金额", "订单数量", "客户数量", "商品销量"],
+        "metric_words": ["金额", "数量", "指标", "增长", "排名", "趋势"],
+        "options": ["总金额", "总数量", "趋势", "排名"],
     },
     "render": {
         "numeric_hints": ["amount", "value", "count", "rate", "price", "metric", "total", "qty", "quantity"],
@@ -102,7 +85,7 @@ DEFAULT_DOMAIN_PROFILE_CONFIG: dict[str, Any] = {
         },
     },
     "frontend": {
-        "example_queries": ["按月份统计订单金额趋势", "各地区销售额占比", "销量最高的前 10 个商品"],
+        "example_queries": ["按月份统计指标趋势", "各维度指标占比", "指标排名前 10"],
     },
 }
 
@@ -210,6 +193,19 @@ class DomainProfile:
                 }
             )
         return tuple(groups)
+
+    @property
+    def retrieval_tag_boost_rules(self) -> tuple[dict[str, Any], ...]:
+        return tuple(self.config.get("retrieval", {}).get("tag_boost_rules", ()))
+
+    @property
+    def retrieval_table_boost_rules(self) -> tuple[dict[str, Any], ...]:
+        return tuple(self.config.get("retrieval", {}).get("table_boost_rules", ()))
+
+    @property
+    def retrieval_relationship_path(self) -> dict[str, Any]:
+        value = self.config.get("retrieval", {}).get("relationship_path", {})
+        return value if isinstance(value, dict) else {}
 
     def clarification_terms(self, name: str) -> tuple[str, ...]:
         return _as_tuple(self.config.get("clarification", {}).get(name))

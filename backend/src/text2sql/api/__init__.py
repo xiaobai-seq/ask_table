@@ -175,7 +175,9 @@ def create_app() -> "FastAPI":
         )
     # 默认内存 repository，保证未触发 startup（如单元测试）时端点仍可用、可注入替换。
     app.state.history_repository = InMemoryHistoryRepository()
-    app.state.domain_profile = DomainProfile.default()
+    domain_profile = DomainProfile.from_yaml(settings.domain_profile_path)
+    set_active_domain_profile(domain_profile)
+    app.state.domain_profile = domain_profile
 
     @app.on_event("startup")
     async def startup() -> None:

@@ -8,15 +8,15 @@ from text2sql.core.retrieval import HybridTableRetriever
 
 # 说明（基于事实）：分词器内置了一份中英业务同义词表（如 订单→orders、金额→amount），
 # 对这些词即使不注入语义也能跨语言召回。为真实体现「schema 语义注入」的独立增益，
-# 这里特意选用同义词表之外的中文别名（库存/inventory），使改进只能归因于语义元数据。
+# 这里特意选用同义词表之外的中文别名（滞销品/slow_movers），使改进只能归因于语义元数据。
 SEMANTICS_YAML = """
 tables:
-  inventory:
-    alias: 库存
-    description: 库存水位与仓储分布快照
+  slow_movers:
+    alias: 滞销品
+    description: 滞销商品与动销效率分析
     columns:
-      stock_level:
-        alias: 库存水位
+      turnover_days:
+        alias: 周转天数
 """
 
 
@@ -37,8 +37,8 @@ class _NoVectorEmbedding:
 def _build_tables() -> list[TableInfo]:
     cols = (ColumnInfo("id", "INTEGER"), ColumnInfo("value", "TEXT"))
     noise = [TableInfo(f"tbl_{i}", "generic data table", columns=cols) for i in range(20)]
-    # 目标表注释为英文，单看 schema 无法被中文「库存」查询命中。
-    target = TableInfo("inventory", "warehouse snapshot stock", columns=cols)
+    # 目标表注释为英文，单看 schema 无法被中文「滞销品」查询命中。
+    target = TableInfo("slow_movers", "slow moving product analytics", columns=cols)
     return [*noise, target]
 
 
@@ -52,7 +52,7 @@ class RetrievalSemanticsIntegrationTest(unittest.TestCase):
                 cache_dir=tmpdir,
                 semantics=semantics,
             )
-            hits = retriever.retrieve("库存水位分布", top_k=len(tables))
+            hits = retriever.retrieve("滞销品周转分布", top_k=len(tables))
         return [hit.table.name for hit in hits]
 
     def test_semantics_injection_improves_recall_ranking(self):
@@ -65,9 +65,9 @@ class RetrievalSemanticsIntegrationTest(unittest.TestCase):
             with_semantics = self._retrieve_names(semantics)
 
         # 未注入语义：中文查询触达不到英文 schema，目标表压根召不回。
-        self.assertNotIn("inventory", without)
+        self.assertNotIn("slow_movers", without)
         # 注入语义后：目标表被召回且跃居第一，排名显著提升。
-        self.assertEqual(with_semantics[0], "inventory")
+        self.assertEqual(with_semantics[0], "slow_movers")
 
 
 if __name__ == "__main__":

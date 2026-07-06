@@ -197,6 +197,8 @@ class EvalCase:
     expected_tables: tuple[str, ...] = ()
     required_sql_keywords: tuple[str, ...] = ()
     allow_clarification: bool = False
+    # 固定表评测使用：跳过 schema 召回，直接把这些表注入 SQL 生成器。
+    fixed_tables: tuple[str, ...] = ()
     # 期望结果集（每行一个 dict）；提供时评测会做执行结果级比对（行/列/值）。
     expected_result: tuple[dict[str, Any], ...] | None = None
 

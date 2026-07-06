@@ -35,6 +35,8 @@ if _HAS_PYDANTIC_SETTINGS:
         dashscope_api_key: str | None = Field(default=None, alias="DASHSCOPE_API_KEY")
         dashscope_llm_model: str = Field(default="qwen3.7-plus", alias="DASHSCOPE_LLM_MODEL")
         dashscope_http_base_url: str | None = Field(default=None, alias="DASHSCOPE_HTTP_BASE_URL")
+        # 单次 LLM 请求超时；DashScope SDK 默认约 300 秒，评测时可调小避免单 case 长时间卡住。
+        llm_request_timeout_seconds: int = 300
 
         sql_repair_max_retries: int = 2
         rate_limit_per_minute: int = 60
@@ -63,6 +65,9 @@ else:
             self.dashscope_api_key = os.getenv("DASHSCOPE_API_KEY")
             self.dashscope_llm_model = os.getenv("DASHSCOPE_LLM_MODEL", "qwen3.7-plus")
             self.dashscope_http_base_url = os.getenv("DASHSCOPE_HTTP_BASE_URL")
+            self.llm_request_timeout_seconds = int(
+                os.getenv("TEXT2SQL_LLM_REQUEST_TIMEOUT_SECONDS", "300")
+            )
             self.sql_repair_max_retries = int(os.getenv("TEXT2SQL_SQL_REPAIR_MAX_RETRIES", "2"))
             self.rate_limit_per_minute = int(os.getenv("TEXT2SQL_RATE_LIMIT_PER_MINUTE", "60"))
             self.rate_limit_fail_open = os.getenv("TEXT2SQL_RATE_LIMIT_FAIL_OPEN", "1") in ("1", "true", "True")
