@@ -9,6 +9,7 @@ HybridTableRetriever 会先用 BM25/向量拿到候选池，再调用这里的 R
 import os
 from typing import Protocol
 
+from text2sql.config.domain_profile import DomainProfile
 from text2sql.core.models import TableInfo
 from text2sql.core.tokenization import overlap_ratio
 
@@ -21,12 +22,21 @@ class Reranker(Protocol):
 class HeuristicReranker:
     """基于 query 与表/字段文本重叠度的本地重排器。"""
 
+    def __init__(self, domain_profile: DomainProfile | None = None) -> None:
+        self.domain_profile = domain_profile
+
     def rerank(self, query: str, tables: list[TableInfo]) -> list[tuple[TableInfo, float]]:
         scored: list[tuple[TableInfo, float]] = []
         for table in tables:
-            comment_score = overlap_ratio(query, f"{table.name} {table.comment}") * 1.5
-            column_score = overlap_ratio(query, " ".join(column.document() for column in table.columns))
-            tag_score = overlap_ratio(query, " ".join(table.semantic_tags))
+            comment_score = (
+                overlap_ratio(query, f"{table.name} {table.comment}", self.domain_profile) * 1.5
+            )
+            column_score = overlap_ratio(
+                query,
+                " ".join(column.document() for column in table.columns),
+                self.domain_profile,
+            )
+            tag_score = overlap_ratio(query, " ".join(table.semantic_tags), self.domain_profile)
             scored.append((table, comment_score + column_score + tag_score))
         return sorted(scored, key=lambda item: item[1], reverse=True)
 
@@ -55,9 +65,9 @@ class DashScopeGTEReranker:
         return sorted(scored, key=lambda item: item[1], reverse=True)
 
 
-def default_reranker() -> Reranker:
+def default_reranker(domain_profile: DomainProfile | None = None) -> Reranker:
     """有 API Key 时使用模型重排，否则使用启发式重排。"""
 
     if os.getenv("DASHSCOPE_API_KEY"):
         return DashScopeGTEReranker()
-    return HeuristicReranker()
+    return HeuristicReranker(domain_profile)

@@ -20,7 +20,8 @@ from typing import AsyncIterator
 
 from text2sql.accuracy.few_shot import FewShotStore
 from text2sql.accuracy.schema_semantics import SchemaSemantics
-from text2sql.config.domain_profile import DomainProfile, get_domain_profile, set_active_domain_profile
+from text2sql.config.domain_profile import DomainProfile, set_active_domain_profile
+from text2sql.config.settings import Settings
 from text2sql.core.clarification import AmbiguityDetector
 from text2sql.core.context import ConversationMemory
 from text2sql.core.executor import QueryExecutor
@@ -71,7 +72,7 @@ class Text2SQLWorkflow:
         ambiguity_detector: AmbiguityDetector | None = None,
         domain_profile: DomainProfile | None = None,
     ) -> None:
-        self.domain_profile = domain_profile or get_domain_profile()
+        self.domain_profile = domain_profile or DomainProfile.from_yaml(Settings().domain_profile_path)
         set_active_domain_profile(self.domain_profile)
         # schema 可以由调用方直接注入，也可以从数据库连接动态 introspect。
         # 测试里常直接传 tables；API/CLI 则通常走 database_url_or_path。
@@ -88,7 +89,12 @@ class Text2SQLWorkflow:
 
         # 下面这些组件分别对应主链路中的一个阶段；默认实现都支持本地可测降级。
         self.memory = memory or ConversationMemory()
-        self.retriever = HybridTableRetriever(tables, cache_dir=cache_dir, semantics=self.schema_semantics)
+        self.retriever = HybridTableRetriever(
+            tables,
+            cache_dir=cache_dir,
+            semantics=self.schema_semantics,
+            domain_profile=self.domain_profile,
+        )
         self.relationship_resolver = relationship_resolver or default_relationship_resolver(tables)
         llm_provider = llm_provider or default_llm_provider()
         self.sql_generator = PromptedSQLGenerator(

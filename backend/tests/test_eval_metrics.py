@@ -1,6 +1,6 @@
 import unittest
 
-from text2sql.eval import aggregate_metrics, compare_result_sets
+from text2sql.eval import aggregate_metrics, compare_result_sets, compare_table_retrieval
 from text2sql.core.models import EvalResult
 
 
@@ -66,6 +66,28 @@ class ResultComparisonTests(unittest.TestCase):
         aggregated = aggregate_metrics(results)
         self.assertAlmostEqual(aggregated["table_recall"], 0.5)
         self.assertAlmostEqual(aggregated["value_set_recall"], 0.75)
+
+    def test_compare_table_retrieval_reports_recall_precision_and_accuracy(self):
+        metrics = compare_table_retrieval(
+            ("orders", "customers"),
+            ("customers", "orders", "noise"),
+        )
+
+        self.assertEqual(metrics["table_recall"], 1.0)
+        self.assertAlmostEqual(metrics["table_precision"], 2 / 3)
+        self.assertAlmostEqual(metrics["table_f1"], 0.8)
+        # 前 |G| 个候选刚好覆盖金标表集，说明排序把正确表顶到了最前面。
+        self.assertEqual(metrics["table_accuracy"], 1.0)
+        self.assertEqual(metrics["table_top1_hit"], 1.0)
+
+    def test_compare_table_retrieval_accuracy_catches_bad_top_ordering(self):
+        metrics = compare_table_retrieval(
+            ("orders", "customers"),
+            ("orders", "noise", "customers"),
+        )
+
+        self.assertEqual(metrics["table_recall"], 1.0)
+        self.assertEqual(metrics["table_accuracy"], 0.0)
 
 
 if __name__ == "__main__":

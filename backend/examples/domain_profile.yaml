@@ -1,18 +1,43 @@
 # Domain profile for the built-in demo/ecommerce assets.
 #
 # Override with TEXT2SQL_DOMAIN_PROFILE_PATH to adapt Text2SQL to another business
-# domain before changing code. Missing keys fall back to the in-code default profile.
+# domain before changing code. Missing keys fall back to the domain-neutral base profile.
 
 name: default
 description: Default profile compatible with the built-in demo and ecommerce examples.
 
 synonyms:
   订单: [order, orders, sales, 交易, 成交]
+  下单: [order, orders, order_date, user_id]
+  下过单: [order, orders, user_id]
   销售: [sales, amount, gmv, revenue, 营收, 收入]
+  销售额: [sales, amount, subtotal, total_amount, gmv, revenue]
   客户: [customer, customers, user, 用户, 买家]
   商品: [product, products, sku, item, 货品]
+  sku: [SKU, 商品SKU, 商品, product]
+  spu: [SPU, 商品SPU, 标准产品, product]
+  品牌: [brand, brands]
+  供应商: [supplier, suppliers, 供货商]
+  品类: [category, categories, 类目, 类别]
+  类目: [category, categories, 品类, 类别]
   员工: [employee, staff, member, 组织, 部门]
   金额: [amount, price, payment, gmv, revenue]
+  客单价: [aov, average_order_value, order, orders, total_amount, amount]
+  省份: [province, receiver_province, region]
+  退款: [refund, refunds, refunded, refund_amount]
+  退货: [return, returns, return_orders, return_items]
+  评价: [review, reviews, product_reviews, rating]
+  评分: [rating, review, product_reviews]
+  库存: [inventory, stock, quantity]
+  仓库: [warehouse, warehouses]
+  物流: [logistics, shipment, shipments, delivery]
+  签收: [signed, delivered, shipment]
+  来源: [source, channel]
+  渠道: [source, channel]
+  漏斗: [funnel, conversion]
+  转化: [conversion, funnel]
+  浏览: [view, event, user_events]
+  加购: [add_cart, cart, event, user_events]
   时间: [date, time, created, month, day, year]
   日期: [date, time, created, day]
   月份: [month, date, time, period]
@@ -68,6 +93,187 @@ sql:
       columns: [customer_name, user_name]
     - terms: [商品, 品类, 类别]
       columns: [category, product_name, name]
+
+retrieval:
+  tag_boost_rules:
+    - match:
+        terms_any: [month, date, time, period, trend, lag, 环比, 同比, 月份, 趋势]
+      column_tag: time
+      boost: 0.08
+      penalty: -0.03
+    - match:
+        terms_any: [amount, price, gmv, revenue, metric, 金额, 销售, 收入]
+      column_tag: metric
+      boost: 0.04
+      penalty: -0.02
+    - match:
+        all:
+          - terms_any: [month, date, time, period, trend, lag, 环比, 同比, 月份, 趋势]
+          - terms_any: [amount, price, gmv, revenue, metric, 金额, 销售, 收入]
+      column_tags_all: [time, metric]
+      boost: 0.04
+
+  table_boost_rules:
+    - match:
+        any:
+          - terms_any: [品类, 类目, category, categories, 类别]
+          - phrases_any: [品类, 类目, 类别]
+      boosts:
+        - table_contains: [categor]
+          boost: 0.42
+        - tables: [spus]
+          boost: 0.22
+    - match:
+        terms_any: [品牌, brand, brands]
+      boosts:
+        - table_contains: [brand]
+          boost: 0.22
+        - tables: [spus]
+          boost: 0.10
+    - match:
+        terms_any: [供应商, supplier, suppliers, 供货商]
+      boosts:
+        - table_contains: [supplier]
+          boost: 0.22
+        - tables: [spus]
+          boost: 0.10
+    - match:
+        any:
+          - phrases_any: [sku, 商品sku]
+          - terms_any: [product_reviews, review, reviews, 评价, 评分, rating]
+      boosts:
+        - tables: [skus]
+          boost: 0.30
+    - match:
+        terms_any: [product_reviews, review, reviews, 评价, 评分, rating]
+      boosts:
+        - tables: [product_reviews]
+          boost: 0.18
+    - match:
+        all:
+          - phrases_any: [sku, 商品sku]
+          - terms_any: [product_reviews, review, reviews, 评价, 评分, rating]
+          - phrases_any: [从未, 未被, 没有, 无评价]
+      boosts:
+        - tables: [skus]
+          boost: 0.55
+        - tables: [product_reviews]
+          boost: 0.28
+        - tables: [order_items, return_items]
+          boost: -0.12
+    - match:
+        terms_any: [退款, refund, refunds, refunded]
+      boosts:
+        - tables: [refunds]
+          boost: 0.26
+        - tables: [return_orders]
+          boost: -0.08
+    - match:
+        terms_any: [退货, return, returns, return_orders]
+      boosts:
+        - table_prefixes: [return_]
+          boost: 0.16
+    - match:
+        any:
+          - terms_any: [客单价, aov, average_order_value]
+          - phrases_any: [客单价]
+      boosts:
+        - tables: [orders]
+          boost: 0.32
+    - match:
+        any:
+          - terms_any: [下单, 下过单, order, orders]
+          - phrases_any: [下单, 下过单]
+      boosts:
+        - tables: [orders]
+          boost: 0.16
+    - match:
+        all:
+          - any:
+              - terms_any: [下单, 下过单, order, orders]
+              - phrases_any: [下单, 下过单]
+          - phrases_any: [从未]
+      boosts:
+        - tables: [orders]
+          boost: 0.16
+    - match:
+        terms_any: [仓库, warehouse, warehouses]
+      boosts:
+        - tables: [warehouses]
+          boost: 0.24
+    - match:
+        terms_any: [物流, logistics, 签收, signed, delivered]
+      boosts:
+        - tables: [shipments, logistics_companies]
+          boost: 0.18
+    - match:
+        terms_any: [销售额, sales, gmv, revenue, amount]
+      boosts:
+        - tables: [orders, order_items]
+          boost: 0.08
+    - match:
+        all:
+          - terms_any: [订单, order, orders]
+          - terms_any: [商品, product, sku]
+      boosts:
+        - tables: [order_items]
+          boost: 0.36
+    - match:
+        terms_any: [浏览, 加购, 漏斗, 转化, view, add_cart, funnel, conversion]
+      boosts:
+        - tables: [user_events]
+          boost: 0.34
+    - match:
+        all:
+          - terms_any: [浏览, 加购, 漏斗, 转化, view, add_cart, funnel, conversion]
+          - terms_any: [下单, order, orders]
+      boosts:
+        - tables: [orders]
+          boost: 0.10
+
+  relationship_path:
+    max_depth: 4
+    min_score: 0.04
+    enable_when:
+      any:
+        - terms_any:
+            [商品, product, sku, spu, 品类, category, 类别, 品牌, brand, 供应商,
+             supplier, 会员, member, 物流, logistics, 评价, review]
+        - phrases_any: [商品, 品类, 类目, 类别, 品牌, 供应商, 物流, 评价, 评分]
+    explicit_path_when:
+      phrases_any: [sku, spu]
+    anchors:
+      - match:
+          any:
+            - terms_any: [品类, 类目, category, categories, 类别]
+            - phrases_any: [品类, 类目, 类别]
+        tables: [categories]
+      - match:
+          terms_any: [品牌, brand, brands]
+        tables: [brands]
+      - match:
+          terms_any: [供应商, supplier, suppliers, 供货商]
+        tables: [suppliers]
+      - match:
+          terms_any: [评价, 评分, rating, review, reviews]
+        tables: [product_reviews]
+      - match:
+          terms_any: [物流, logistics, 签收, delivered]
+        tables: [shipments, logistics_companies]
+      - match:
+          terms_any: [仓库, warehouse, warehouses]
+        tables: [warehouses]
+    fact_tables: [orders, order_items]
+    scoring:
+      metric_table_boost: 0.20
+      long_metric_path_boost: 0.08
+      anchor_endpoint_boost: 0.40
+      anchor_fact_endpoint_boost: 0.16
+      anchor_path_boost: 0.08
+    bridge_rules:
+      - anchor_tables: [brands, categories, suppliers]
+        required_path_tables: [skus, spus]
+        boost: 0.18
 
 clarification:
   vague_words: [情况, 数据, 看一下, 分析一下, 表现, 怎么样]

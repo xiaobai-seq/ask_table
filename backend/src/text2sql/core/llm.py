@@ -26,14 +26,19 @@ class DashScopeLLMProvider:
         model: str | None = None,
         api_key: str | None = None,
         base_http_api_url: str | None = None,
+        request_timeout_seconds: int | None = None,
     ) -> None:
         self.model = model or os.getenv("DASHSCOPE_LLM_MODEL", "qwen3.7-plus")
         self.api_key = api_key or os.getenv("DASHSCOPE_API_KEY")
         self.base_http_api_url = base_http_api_url or os.getenv("DASHSCOPE_HTTP_BASE_URL")
+        self.request_timeout_seconds = request_timeout_seconds
 
     async def complete(self, prompt: str) -> str:
         # DashScope SDK 是同步调用，放到线程里避免阻塞 async workflow。
-        return await asyncio.to_thread(self._complete_sync, prompt)
+        task = asyncio.to_thread(self._complete_sync, prompt)
+        if self.request_timeout_seconds is None or self.request_timeout_seconds <= 0:
+            return await task
+        return await asyncio.wait_for(task, timeout=self.request_timeout_seconds)
 
     def _complete_sync(self, prompt: str) -> str:
         try:  # pragma: no cover - optional network dependency
@@ -46,6 +51,8 @@ class DashScopeLLMProvider:
         call_kwargs = {}
         if self.base_http_api_url:
             call_kwargs["base_address"] = self.base_http_api_url
+        if self.request_timeout_seconds is not None:
+            call_kwargs["timeout"] = self.request_timeout_seconds
         if _uses_multimodal_generation(self.model):
             response = dashscope.MultiModalConversation.call(
                 model=self.model,
@@ -110,9 +117,13 @@ def default_llm_provider() -> LLMProvider | None:
                 model=settings.dashscope_llm_model,
                 api_key=settings.dashscope_api_key,
                 base_http_api_url=settings.dashscope_http_base_url,
+                request_timeout_seconds=settings.llm_request_timeout_seconds,
             )
         return None
     except Exception:  # pragma: no cover - 配置异常时退回环境变量判断
         if os.getenv("TEXT2SQL_USE_LLM") == "1" and os.getenv("DASHSCOPE_API_KEY"):
-            return DashScopeLLMProvider()
+            timeout = os.getenv("TEXT2SQL_LLM_REQUEST_TIMEOUT_SECONDS")
+            return DashScopeLLMProvider(
+                request_timeout_seconds=int(timeout) if timeout else None
+            )
         return None
