@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import tempfile
 import unittest
 from contextlib import redirect_stderr
@@ -9,7 +10,9 @@ from text2sql.core.models import EvalCase, ExecutionResult, RetrievalHit, SQLPla
 from text2sql.eval import (
     FixedTableEvaluationRunner,
     TableRetrievalEvaluationRunner,
+    checkpoint_report_path,
     load_cases,
+    write_checkpoint_report,
 )
 
 
@@ -115,6 +118,53 @@ class EvalModeTests(unittest.TestCase):
         output = stream.getvalue()
         self.assertIn("[eval] retrieval 1/1 tables start", output)
         self.assertIn("[eval] retrieval 1/1 tables PASS", output)
+
+    def test_runner_after_case_callback_can_write_checkpoint(self):
+        workflow = _StubWorkflow()
+        cases = [
+            EvalCase(
+                case_id="tables_1",
+                query="按客户统计订单金额",
+                expected_tables=("orders", "customers"),
+            ),
+            EvalCase(
+                case_id="tables_2",
+                query="按客户统计订单金额",
+                expected_tables=("orders", "customers"),
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "eval.json.checkpoint.json"
+
+            def after_case(results, _result, completed, total):
+                write_checkpoint_report(
+                    path,
+                    results,
+                    {"mode": "retrieval"},
+                    completed=completed,
+                    total=total,
+                )
+
+            results = asyncio.run(
+                TableRetrievalEvaluationRunner(workflow, top_k=3).run(
+                    cases,
+                    after_case=after_case,
+                )
+            )
+            payload = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(len(results), 2)
+        self.assertEqual(payload["metadata"]["checkpoint"], True)
+        self.assertEqual(payload["metadata"]["completed"], 2)
+        self.assertEqual(payload["metadata"]["total"], 2)
+        self.assertEqual(payload["summary"]["total"], 2)
+
+    def test_checkpoint_report_path_defaults_next_to_report(self):
+        self.assertEqual(
+            checkpoint_report_path("reports/eval.json"),
+            Path("reports/eval.json.checkpoint.json"),
+        )
 
     def test_fixed_table_runner_uses_fixed_tables_for_generation_accuracy(self):
         workflow = _StubWorkflow()

@@ -84,4 +84,11 @@ class AmbiguityDetector:
 
     def _has_pronoun(self, query: str) -> bool:
         # 有指代但没有历史上下文时，生成器无法知道“这个/上面”指什么。
-        return any(word in query for word in ("它", "这个", "这些", "其中", "上面", "刚才"))
+        if any(word in query for word in ("它", "这个", "其中", "上面", "刚才")):
+            return True
+        # “这些用户/订单/商品”常用于同一句 SQL cohort（如“这些用户下月仍活跃”），
+        # 已经给出具体对象时不应误判为跨轮指代。
+        if "这些" not in query:
+            return False
+        concrete_followers = ("这些用户", "这些客户", "这些订单", "这些商品", "这些sku", "这些SKU")
+        return not any(phrase in query for phrase in concrete_followers)

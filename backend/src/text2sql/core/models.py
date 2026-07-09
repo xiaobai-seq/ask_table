@@ -7,7 +7,9 @@ SQL 生成产出 SQLPlan，执行产出 ExecutionResult，最终渲染产出 Ren
 AgentState 则是工作流节点之间共享的“黑板”。
 """
 
+import datetime as dt
 from dataclasses import asdict, dataclass, field
+from decimal import Decimal
 from typing import Any, Literal, NotRequired, TypedDict
 
 
@@ -253,6 +255,10 @@ def to_plain(value: Any) -> Any:
         return {key: to_plain(val) for key, val in value.items()}
     if isinstance(value, (list, tuple)):
         return [to_plain(item) for item in value]
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (dt.datetime, dt.date, dt.time)):
+        return value.isoformat()
     return value
 
 

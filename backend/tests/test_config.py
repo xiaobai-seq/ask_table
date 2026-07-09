@@ -11,6 +11,21 @@ class SettingsTest(unittest.TestCase):
     def test_default_sql_repair_max_retries(self):
         self.assertEqual(Settings().sql_repair_max_retries, 2)
 
+    def test_default_schema_retrieval_top_k(self):
+        self.assertEqual(Settings().schema_retrieval_top_k, 8)
+
+    def test_env_override_schema_retrieval_top_k(self):
+        key = "TEXT2SQL_SCHEMA_RETRIEVAL_TOP_K"
+        original = os.environ.get(key)
+        os.environ[key] = "10"
+        try:
+            self.assertEqual(Settings().schema_retrieval_top_k, 10)
+        finally:
+            if original is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = original
+
     def test_env_override_sql_repair_max_retries(self):
         key = "TEXT2SQL_SQL_REPAIR_MAX_RETRIES"
         original = os.environ.get(key)

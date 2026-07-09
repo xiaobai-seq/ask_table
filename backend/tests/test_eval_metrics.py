@@ -1,4 +1,5 @@
 import unittest
+from decimal import Decimal
 
 from text2sql.eval import aggregate_metrics, compare_result_sets, compare_table_retrieval
 from text2sql.core.models import EvalResult
@@ -66,6 +67,16 @@ class ResultComparisonTests(unittest.TestCase):
         aggregated = aggregate_metrics(results)
         self.assertAlmostEqual(aggregated["table_recall"], 0.5)
         self.assertAlmostEqual(aggregated["value_set_recall"], 0.75)
+
+    def test_aggregate_metrics_accepts_decimal_values(self):
+        aggregated = aggregate_metrics(
+            [
+                EvalResult("a", True, {"value_set_exact": Decimal("1.0")}, "sql"),
+                EvalResult("b", False, {"value_set_exact": Decimal("0.0")}, "sql"),
+            ]
+        )
+
+        self.assertAlmostEqual(aggregated["value_set_exact"], 0.5)
 
     def test_compare_table_retrieval_reports_recall_precision_and_accuracy(self):
         metrics = compare_table_retrieval(

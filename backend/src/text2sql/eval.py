@@ -9,9 +9,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
+from collections.abc import Callable
 from collections import Counter, defaultdict
+from decimal import Decimal
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Any
 
 from text2sql.accuracy.few_shot import InMemoryFewShotStore
@@ -34,6 +38,8 @@ _GATING_METRICS: tuple[str, ...] = (
     "execution_success",
     "value_set_exact",
 )
+
+AfterCaseCallback = Callable[[list["EvalResult"], "EvalResult", int, int], None]
 
 
 def _normalize_cell(value: Any) -> str:
@@ -149,7 +155,7 @@ def aggregate_metrics(results: list["EvalResult"]) -> dict[str, float]:
     counts: dict[str, int] = defaultdict(int)
     for result in results:
         for name, value in result.metrics.items():
-            sums[name] += value
+            sums[name] += float(value) if isinstance(value, Decimal) else value
             counts[name] += 1
     return {name: sums[name] / counts[name] for name in sums}
 
@@ -220,6 +226,18 @@ class EvaluationRunner:
         """从 workflow 最终 state 采集逐环节 trace（检索/prompt/执行样例等）。"""
 
         execution = state.get("execution_result")
+        plan = state.get("sql_plan")
+        plan_warnings = list(getattr(plan, "warnings", ()) or ())
+        quality_gate_issues = [
+            warning.split(":", 1)[1]
+            for warning in plan_warnings
+            if warning.startswith("quality_gate_issue:")
+        ]
+        quality_gate_remaining_issues = [
+            warning.split(":", 1)[1]
+            for warning in plan_warnings
+            if warning.startswith("quality_gate_remaining_issue:")
+        ]
         hits = state.get("retrieval_hits", [])
         has_exec = bool(execution and not execution.error)
         rewritten = state.get("rewritten_query", "")
@@ -240,6 +258,16 @@ class EvaluationRunner:
             "few_shot_examples": self._collect_few_shot(rewritten or case.query),
             "prompt": state.get("sql_prompt"),
             "generated_sql": state.get("generated_sql"),
+            "sql_reasoning": getattr(plan, "reasoning", None),
+            "sql_confidence": getattr(plan, "confidence", None),
+            "sql_advanced_features": list(getattr(plan, "advanced_features", ()) or ()),
+            "sql_warnings": plan_warnings,
+            "quality_gate_issues": quality_gate_issues,
+            "quality_gate_remaining_issues": quality_gate_remaining_issues,
+            "quality_gate_repaired": "quality_gate_repair" in plan_warnings,
+            "quality_gate_repair_failed": "quality_gate_repair_failed" in plan_warnings,
+            "quality_gate_repair_unresolved": "quality_gate_repair_unresolved" in plan_warnings,
+            "quality_gate_template_fallback": "quality_gate_template_fallback" in plan_warnings,
             # 只截断落前若干行，避免大结果集撑爆存储；总行数另由 row_count 记录。
             "execution_rows": (
                 [dict(row) for row in execution.rows[:_TRACE_MAX_ROWS]] if has_exec else []
@@ -262,7 +290,11 @@ class EvaluationRunner:
         except Exception:  # pragma: no cover - few-shot 检索失败不应中断评测
             return []
 
-    async def run(self, cases: list[EvalCase]) -> list[EvalResult]:
+    async def run(
+        self,
+        cases: list[EvalCase],
+        after_case: AfterCaseCallback | None = None,
+    ) -> list[EvalResult]:
         results: list[EvalResult] = []
         total = len(cases)
         for index, case in enumerate(cases, start=1):
@@ -281,6 +313,8 @@ class EvaluationRunner:
                     flush=True,
                 )
             results.append(result)
+            if after_case is not None:
+                after_case(results, result, index, total)
         return results
 
 
@@ -370,6 +404,7 @@ class FixedTableEvaluationRunner(EvaluationRunner):
             "retrieval_hits": hits,
             "table_relationship": relationships,
             "sql_prompt": prompt,
+            "sql_plan": plan,
             "generated_sql": plan.sql,
             "execution_result": execution,
             "clarification": None,
@@ -449,6 +484,17 @@ def summarize_results(results: list[EvalResult]) -> dict[str, Any]:
     }
 
 
+def _json_report_default(value: Any) -> Any:
+    """兜底转换 MySQL 驱动返回的非 JSON 标量，避免长跑结束后报告写盘失败。"""
+
+    plain = to_plain(value)
+    if plain is not value:
+        return plain
+    if isinstance(value, set):
+        return [to_plain(item) for item in sorted(value, key=str)]
+    raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
+
+
 def write_report(
     path: str | Path,
     results: list[EvalResult],
@@ -461,7 +507,37 @@ def write_report(
         "summary": summarize_results(results),
         "results": [to_plain(result) for result in results],
     }
-    Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    Path(path).write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=_json_report_default),
+        encoding="utf-8",
+    )
+
+
+def checkpoint_report_path(report_path: str | Path, explicit_path: str | Path | None = None) -> Path:
+    """返回逐 case checkpoint 路径；默认紧挨最终报告，便于崩溃后直接恢复分析。"""
+
+    if explicit_path:
+        return Path(explicit_path)
+    return Path(f"{report_path}.checkpoint.json")
+
+
+def write_checkpoint_report(
+    path: str | Path,
+    results: list[EvalResult],
+    metadata: dict[str, Any],
+    *,
+    completed: int,
+    total: int,
+) -> None:
+    """写出可随时读取的部分 eval 报告；失败只影响 checkpoint，不影响主 eval。"""
+
+    checkpoint_metadata = {
+        **metadata,
+        "checkpoint": True,
+        "completed": completed,
+        "total": total,
+    }
+    write_report(path, results, metadata=checkpoint_metadata)
 
 
 def persist_eval_run(repository, results: list[EvalResult]):
@@ -484,25 +560,47 @@ def persist_case_results(repository, run_id: int, results: list[EvalResult]):
     records = []
     for result in results:
         trace = result.trace or {}
+        metrics = to_plain(dict(result.metrics))
+        sql_generation = sql_generation_trace_metrics(trace)
+        if sql_generation:
+            metrics["sql_generation"] = sql_generation
         record = EvalCaseResultRecord(
             run_id=run_id,
             case_id=result.case_id,
             query=trace.get("query", ""),
             rewritten_query=trace.get("rewritten_query", ""),
             passed=result.passed,
-            retrieval_hits=trace.get("retrieval_hits", []),
-            table_relationship=trace.get("table_relationship", []),
-            few_shot_examples=trace.get("few_shot_examples", []),
+            retrieval_hits=to_plain(trace.get("retrieval_hits", [])),
+            table_relationship=to_plain(trace.get("table_relationship", [])),
+            few_shot_examples=to_plain(trace.get("few_shot_examples", [])),
             prompt=trace.get("prompt"),
             generated_sql=result.generated_sql,
-            execution_rows=trace.get("execution_rows", []),
+            execution_rows=to_plain(trace.get("execution_rows", [])),
             row_count=trace.get("row_count"),
-            clarification=trace.get("clarification"),
-            metrics=dict(result.metrics),
+            clarification=to_plain(trace.get("clarification")),
+            metrics=metrics,
             errors=list(result.errors),
         )
         records.append(repository.record_case_result(record))
     return records
+
+
+def sql_generation_trace_metrics(trace: dict[str, Any]) -> dict[str, Any]:
+    """把 SQL 生成诊断折叠进 case metrics，便于无需迁移表结构也能落库查询。"""
+
+    fields = (
+        "sql_reasoning",
+        "sql_confidence",
+        "sql_advanced_features",
+        "sql_warnings",
+        "quality_gate_issues",
+        "quality_gate_remaining_issues",
+        "quality_gate_repaired",
+        "quality_gate_repair_failed",
+        "quality_gate_repair_unresolved",
+        "quality_gate_template_fallback",
+    )
+    return {field: to_plain(trace[field]) for field in fields if field in trace}
 
 
 def _redact_database_url(url: str) -> str:
@@ -556,6 +654,104 @@ def _build_eval_run_repository(settings: "Settings", *, allow_inmemory: bool = F
         ) from exc
 
 
+def validate_external_ai_eval_consent(
+    settings: "Settings",
+    *,
+    mode: str,
+    allow_external_ai_eval: bool = False,
+    allow_external_llm_eval: bool = False,
+) -> None:
+    """真实 eval 使用外部 AI 服务前，要求显式授权。
+
+    eval 的外部调用不止 SQL 生成 LLM：只要配置了 DASHSCOPE_API_KEY，
+    schema embedding 和 rerank 也会把 schema 文档 / case query 发送到 DashScope。
+    因此这里必须在 workflow 构造前统一拦截，避免长跑中途才卡到网络调用。
+    """
+
+    services = _external_ai_eval_services(settings, mode=mode)
+    if not services:
+        return
+    if (
+        allow_external_ai_eval
+        or allow_external_llm_eval
+        or _env_flag_enabled("TEXT2SQL_ALLOW_EXTERNAL_AI_EVAL")
+        or _env_flag_enabled("TEXT2SQL_ALLOW_EXTERNAL_LLM_EVAL")
+    ):
+        return
+    service_names = ", ".join(service["name"] for service in services)
+    endpoints = "; ".join(f'{service["name"]}: {service["endpoint"]}' for service in services)
+    raise RuntimeError(
+        "Eval would send local schema, case queries, few-shot examples, SQL prompts, or schema "
+        f"documents to external AI services ({service_names}; {endpoints}). Re-run with "
+        "--allow-external-ai-eval or set TEXT2SQL_ALLOW_EXTERNAL_AI_EVAL=1 only after explicit "
+        "approval. The legacy --allow-external-llm-eval flag is still accepted as an alias."
+    )
+
+
+def validate_external_llm_eval_consent(
+    settings: "Settings",
+    *,
+    mode: str,
+    allow_external_llm_eval: bool = False,
+) -> None:
+    """向后兼容旧函数名；真实检查已覆盖 LLM/embedding/rerank。"""
+
+    validate_external_ai_eval_consent(
+        settings,
+        mode=mode,
+        allow_external_llm_eval=allow_external_llm_eval,
+    )
+
+
+def _external_ai_eval_services(settings: "Settings", *, mode: str) -> list[dict[str, str]]:
+    services: list[dict[str, str]] = []
+    if (
+        mode != "retrieval"
+        and _eval_uses_configured_llm(settings)
+        and _is_external_endpoint(getattr(settings, "dashscope_http_base_url", None))
+    ):
+        services.append(
+            {
+                "name": "llm",
+                "endpoint": getattr(settings, "dashscope_http_base_url", None)
+                or "DashScope default endpoint",
+            }
+        )
+    if _eval_uses_dashscope_retrieval_services(settings, mode=mode):
+        services.extend(
+            [
+                {"name": "embedding", "endpoint": "DashScope TextEmbedding endpoint"},
+                {"name": "rerank", "endpoint": "DashScope TextReRank endpoint"},
+            ]
+        )
+    return services
+
+
+def _eval_uses_configured_llm(settings: "Settings") -> bool:
+    return bool(getattr(settings, "use_llm", False) and getattr(settings, "dashscope_api_key", None))
+
+
+def _eval_uses_dashscope_retrieval_services(settings: "Settings", *, mode: str) -> bool:
+    # Text2SQLWorkflow 当前在所有 eval 模式下都会构造 HybridTableRetriever；
+    # 构造时可能重建 schema 向量缓存，retrieval/e2e 查询时还会做 query embedding 和 rerank。
+    return mode in {"e2e", "retrieval", "fixed-tables"} and bool(
+        getattr(settings, "dashscope_api_key", None) or os.getenv("DASHSCOPE_API_KEY")
+    )
+
+
+def _is_external_endpoint(url: str | None) -> bool:
+    if not url:
+        # DashScope SDK default endpoint is remote.
+        return True
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    return host not in {"", "localhost", "127.0.0.1", "::1"}
+
+
+def _env_flag_enabled(name: str) -> bool:
+    return os.getenv(name, "").lower() in {"1", "true", "yes", "on"}
+
+
 def main() -> None:
     """命令行入口：构造 workflow，运行 cases，输出报告路径。"""
 
@@ -572,9 +768,18 @@ def main() -> None:
             "fixed-tables=跳过召回，用 fixed_tables/expected_tables 测 SQL 生成"
         ),
     )
-    parser.add_argument("--top-k", type=int, default=6, help="retrieval 模式的表召回 top K")
+    parser.add_argument("--top-k", type=int, default=8, help="retrieval 模式的表召回 top K")
     parser.add_argument("--cache-dir", default=".text2sql_cache", help="schema 向量缓存目录")
     parser.add_argument("--no-persist", action="store_true", help="只写 JSON report，不落 eval_runs")
+    parser.add_argument(
+        "--checkpoint-report",
+        help="逐 case checkpoint JSON 路径；默认写到 <report>.checkpoint.json",
+    )
+    parser.add_argument(
+        "--no-checkpoint",
+        action="store_true",
+        help="关闭逐 case checkpoint 写入；长耗时 LLM eval 不建议关闭",
+    )
     parser.add_argument(
         "--allow-inmemory-persist",
         action="store_true",
@@ -586,10 +791,29 @@ def main() -> None:
         action="store_true",
         help="e2e 模式也使用 LLM 生成自然语言总结；默认关闭以避免总结阶段影响 SQL 评测",
     )
+    parser.add_argument(
+        "--allow-external-llm-eval",
+        action="store_true",
+        help="兼容旧参数：等同于 --allow-external-ai-eval。",
+    )
+    parser.add_argument(
+        "--allow-external-ai-eval",
+        action="store_true",
+        help=(
+            "明确允许 eval 将本地 schema/case/few-shot prompt/schema 文档发送到外部 "
+            "LLM/embedding/rerank endpoint；真实 AI 评测需要显式开启。"
+        ),
+    )
     args = parser.parse_args()
 
     db = args.db if "://" in args.db else f"sqlite:///{args.db}"
     settings = Settings()
+    validate_external_ai_eval_consent(
+        settings,
+        mode=args.mode,
+        allow_external_ai_eval=args.allow_external_ai_eval,
+        allow_external_llm_eval=args.allow_external_llm_eval,
+    )
     domain_profile = DomainProfile.from_yaml(settings.domain_profile_path)
     set_active_domain_profile(domain_profile)
     semantics = SchemaSemantics.from_yaml(settings.schema_metadata_path)
@@ -600,6 +824,7 @@ def main() -> None:
         schema_semantics=semantics,
         few_shot_store=few_shot_store,
         few_shot_top_k=settings.few_shot_top_k,
+        schema_retrieval_top_k=settings.schema_retrieval_top_k,
         sql_repair_max_retries=settings.sql_repair_max_retries,
         # 评测收紧数据域澄清触发，反映端到端生成能力；线上 API 仍用默认保守门槛。
         ambiguity_detector=AmbiguityDetector.for_evaluation(domain_profile),
@@ -622,27 +847,55 @@ def main() -> None:
         repository = _build_eval_run_repository(
             settings, allow_inmemory=args.allow_inmemory_persist
         )
-    results = asyncio.run(runner.run(cases))
-    write_report(
-        args.report,
-        results,
-        metadata={
-            "mode": args.mode,
-            "top_k": args.top_k,
-            "cases": args.cases,
-            "db": args.db,
-            "cache_dir": args.cache_dir,
-        },
+    report_metadata = {
+        "mode": args.mode,
+        "top_k": args.top_k,
+        "cases": args.cases,
+        "db": args.db,
+        "cache_dir": args.cache_dir,
+    }
+    checkpoint_path = (
+        checkpoint_report_path(args.report, args.checkpoint_report)
+        if not args.no_checkpoint
+        else None
+    )
+
+    def checkpoint(results: list[EvalResult], _result: EvalResult, completed: int, total: int) -> None:
+        if checkpoint_path is None:
+            return
+        try:
+            write_checkpoint_report(
+                checkpoint_path,
+                results,
+                report_metadata,
+                completed=completed,
+                total=total,
+            )
+        except Exception as exc:
+            # checkpoint 是防长跑丢结果的保险，不应反过来中断真实 LLM eval。
+            print(
+                f"[eval] checkpoint write failed: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    results = asyncio.run(
+        runner.run(cases, after_case=None if checkpoint_path is None else checkpoint)
     )
 
     record = None
     if repository is not None:
-        # 聚合结果落 eval_runs、逐 case trace 落 eval_case_results，便于趋势对比与逐环节回溯。
+        # 先落 MySQL，再写最终 JSON；若最终报告序列化/磁盘异常，trace 也不会整轮丢失。
         record = persist_eval_run(repository, results)
         persist_case_results(repository, record.id, results)
+    write_report(args.report, results, metadata=report_metadata)
     passed = sum(1 for result in results if result.passed)
     run_suffix = f" eval_run_id={record.id}" if record else ""
-    print(f"mode={args.mode} pass_rate={passed}/{len(results)} report={args.report}{run_suffix}")
+    checkpoint_suffix = f" checkpoint={checkpoint_path}" if checkpoint_path else ""
+    print(
+        f"mode={args.mode} pass_rate={passed}/{len(results)} report={args.report}"
+        f"{checkpoint_suffix}{run_suffix}"
+    )
 
 
 if __name__ == "__main__":

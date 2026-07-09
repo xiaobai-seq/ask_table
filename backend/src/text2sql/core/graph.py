@@ -37,7 +37,7 @@ from text2sql.core.relationships import RelationshipResolver, default_relationsh
 from text2sql.core.render import ChartRecommender
 from text2sql.core.retrieval import HybridTableRetriever
 from text2sql.core.schema import load_schema
-from text2sql.core.sql_generator import PromptedSQLGenerator
+from text2sql.core.sql_generator import PromptedSQLGenerator, infer_sql_dialect
 from text2sql.core.summarizer import DataInsightSummarizer
 from text2sql.persistence.repository import HistoryRecord
 
@@ -68,6 +68,7 @@ class Text2SQLWorkflow:
         schema_semantics: SchemaSemantics | None = None,
         few_shot_store: FewShotStore | None = None,
         few_shot_top_k: int = 3,
+        schema_retrieval_top_k: int = 8,
         sql_repair_max_retries: int = 2,
         ambiguity_detector: AmbiguityDetector | None = None,
         domain_profile: DomainProfile | None = None,
@@ -103,12 +104,14 @@ class Text2SQLWorkflow:
             few_shot_store=few_shot_store,
             few_shot_top_k=few_shot_top_k,
             domain_profile=self.domain_profile,
+            sql_dialect=infer_sql_dialect(database_url_or_path),
         )
         # 默认使用线上保守门槛；评测可注入 AmbiguityDetector.for_evaluation() 收紧触发。
         self.ambiguity_detector = ambiguity_detector or AmbiguityDetector(domain_profile=self.domain_profile)
         self.executor = QueryExecutor(database_url_or_path, tables) if database_url_or_path else None
         self.summarizer = DataInsightSummarizer(llm_provider)
         self.chart_recommender = ChartRecommender(self.domain_profile)
+        self.schema_retrieval_top_k = schema_retrieval_top_k
         # SQL 自修复重试上限：执行报错时最多回 LLM 重生成的次数，默认 2（取自 settings）。
         self.sql_repair_max_retries = sql_repair_max_retries
         self.graph = self._build_graph()
@@ -243,7 +246,7 @@ class Text2SQLWorkflow:
         session_id = state.get("session_id", "default")
         query = state["user_query"]
         rewritten_query = self.memory.rewrite_query(session_id, query)
-        hits = self.retriever.retrieve(rewritten_query, top_k=6)
+        hits = self.retriever.retrieve(rewritten_query, top_k=self.schema_retrieval_top_k)
         has_context = bool(self.memory.get_turns(session_id))
 
         # 澄清判断使用原始问题，避免“上一轮上下文”让真实含糊的追问被误判为清晰。

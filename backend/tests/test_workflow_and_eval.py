@@ -3,7 +3,7 @@ import tempfile
 import unittest
 
 from text2sql.core.graph import Text2SQLWorkflow
-from text2sql.core.models import EvalCase, ExecutionResult, SQLPlan
+from text2sql.core.models import ColumnInfo, EvalCase, ExecutionResult, SQLPlan, TableInfo
 from text2sql.core.sample_data import create_sample_database
 from text2sql.eval import EvaluationRunner
 
@@ -30,6 +30,21 @@ def _make_repaired_plan(sql: str):
 
 
 class WorkflowAndEvalTests(unittest.TestCase):
+    def test_workflow_passes_database_dialect_to_sql_generator(self):
+        workflow = Text2SQLWorkflow(
+            tables=[
+                TableInfo(
+                    "orders",
+                    "订单",
+                    columns=(ColumnInfo("order_id", "INTEGER", primary_key=True),),
+                )
+            ],
+            database_url_or_path="mysql+pymysql://user:pw@127.0.0.1:3308/demo",
+            cache_dir="/tmp/text2sql-dialect-test",
+        )
+
+        self.assertEqual(workflow.sql_generator.sql_dialect, "mysql")
+
     def test_workflow_runs_end_to_end_with_sample_database(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = f"{tmpdir}/demo.db"
@@ -147,4 +162,3 @@ class WorkflowAndEvalTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

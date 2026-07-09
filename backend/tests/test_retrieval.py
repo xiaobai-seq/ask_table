@@ -249,6 +249,78 @@ class RetrievalTests(unittest.TestCase):
 
         self.assertEqual(hits[0].table.name, "tickets")
 
+    def test_explicit_table_column_reference_is_strong_signal(self):
+        tables = [
+            TableInfo(
+                "orders",
+                "订单 金额",
+                columns=(
+                    ColumnInfo("order_id", "INTEGER", primary_key=True),
+                    ColumnInfo("total_amount", "REAL", semantic_tags=("metric",)),
+                ),
+            ),
+            TableInfo(
+                "payments",
+                "支付记录",
+                columns=(
+                    ColumnInfo("payment_id", "INTEGER", primary_key=True),
+                    ColumnInfo("paid_at", "TEXT", semantic_tags=("time",)),
+                ),
+            ),
+            TableInfo(
+                "refunds",
+                "退款记录",
+                columns=(
+                    ColumnInfo("refund_id", "INTEGER", primary_key=True),
+                    ColumnInfo("refunded_at", "TEXT", semantic_tags=("time",)),
+                ),
+            ),
+            TableInfo("inventory", "库存流水", columns=(ColumnInfo("quantity", "INTEGER"),)),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            retriever = HybridTableRetriever(
+                tables,
+                embedding_provider=_FlatEmbedding(),
+                cache_dir=tmpdir,
+                domain_profile=_example_domain_profile(),
+            )
+            hits = retriever.retrieve("按月份统计 payments.paid_at 和 refunds.refunded_at", top_k=3)
+
+        self.assertEqual({"payments", "refunds"}, {hit.table.name for hit in hits[:2]})
+        self.assertIn("explicit_schema_reference", hits[0].reasons)
+
+    def test_unique_column_reference_promotes_owning_table(self):
+        tables = [
+            TableInfo(
+                "orders",
+                "订单 金额",
+                columns=(
+                    ColumnInfo("order_id", "INTEGER", primary_key=True),
+                    ColumnInfo("total_amount", "REAL", semantic_tags=("metric",)),
+                ),
+            ),
+            TableInfo(
+                "users",
+                "用户",
+                columns=(
+                    ColumnInfo("user_id", "INTEGER", primary_key=True),
+                    ColumnInfo("total_spent", "REAL", semantic_tags=("metric",)),
+                ),
+            ),
+            TableInfo("user_events", "用户行为", columns=(ColumnInfo("event_type", "TEXT"),)),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            retriever = HybridTableRetriever(
+                tables,
+                embedding_provider=_FlatEmbedding(),
+                cache_dir=tmpdir,
+                domain_profile=_example_domain_profile(),
+            )
+            hits = retriever.retrieve("对比 users.total_spent 与订单累计金额", top_k=3)
+
+        self.assertEqual(hits[0].table.name, "users")
+        self.assertIn("explicit_schema_reference", hits[0].reasons)
+
 
 if __name__ == "__main__":
     unittest.main()

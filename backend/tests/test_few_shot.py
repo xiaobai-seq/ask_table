@@ -8,7 +8,7 @@ from text2sql.accuracy.few_shot import (
     format_examples_block,
 )
 from text2sql.core.models import ColumnInfo, RetrievalHit, TableInfo
-from text2sql.core.sql_generator import PromptedSQLGenerator
+from text2sql.core.sql_generator import PromptedSQLGenerator, is_sql_compatible_with_dialect
 
 SEED_JSONL = (
     '{"question": "按月份统计订单金额趋势", "sql": "SELECT month, SUM(total_amount) FROM orders GROUP BY month", "chart_type": "line"}\n'
@@ -94,6 +94,62 @@ class FewShotPromptInjectionTests(unittest.TestCase):
             "按月份统计订单金额趋势，并计算环比增长率", [RetrievalHit(self.orders, 1.0)], []
         )
         self.assertIn("LAG", plan.sql)
+
+    def test_mysql_prompt_filters_sqlite_only_few_shot_examples(self):
+        store = InMemoryFewShotStore()
+        store.add(
+            FewShotExample(
+                "物流配送时长",
+                "SELECT AVG(julianday(delivered_at) - julianday(shipped_at)) FROM shipments",
+                "bar",
+            )
+        )
+        store.add(
+            FewShotExample(
+                "物流时长",
+                "SELECT AVG(TIMESTAMPDIFF(HOUR, shipped_at, delivered_at)) FROM shipments",
+                "bar",
+            )
+        )
+        shipments = TableInfo(
+            "shipments",
+            "物流",
+            columns=(
+                ColumnInfo("shipment_id", "INTEGER", primary_key=True),
+                ColumnInfo("shipped_at", "DATETIME"),
+                ColumnInfo("delivered_at", "DATETIME"),
+            ),
+        )
+        generator = PromptedSQLGenerator(
+            few_shot_store=store,
+            few_shot_top_k=1,
+            sql_dialect="mysql",
+        )
+
+        prompt = generator.build_prompt("物流配送时长", [RetrievalHit(shipments, 1.0)], [])
+
+        self.assertIn("TIMESTAMPDIFF", prompt)
+        self.assertNotIn("AVG(julianday", prompt)
+
+    def test_sql_compatibility_detects_cross_dialect_functions(self):
+        self.assertFalse(
+            is_sql_compatible_with_dialect(
+                "SELECT AVG(julianday(delivered_at) - julianday(shipped_at)) FROM shipments",
+                "mysql",
+            )
+        )
+        self.assertFalse(
+            is_sql_compatible_with_dialect(
+                "SELECT DATE_FORMAT(order_date, '%Y-%m') FROM orders",
+                "sqlite",
+            )
+        )
+        self.assertTrue(
+            is_sql_compatible_with_dialect(
+                "SELECT COUNT(*) AS order_count FROM orders",
+                "mysql",
+            )
+        )
 
 
 if __name__ == "__main__":

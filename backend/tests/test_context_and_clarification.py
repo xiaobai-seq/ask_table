@@ -67,7 +67,17 @@ class ContextAndClarificationTests(unittest.TestCase):
 
         self.assertIsNone(clarification)
 
+    def test_same_sentence_cohort_reference_does_not_require_context(self):
+        hit = self._hit("user_events", 1.0)
+
+        clarification = AmbiguityDetector.for_evaluation().detect(
+            "统计每月活跃用户数，以及这些用户下月仍有行为事件的留存率。",
+            [hit],
+            has_context=False,
+        )
+
+        self.assertIsNone(clarification)
+
 
 if __name__ == "__main__":
     unittest.main()
-

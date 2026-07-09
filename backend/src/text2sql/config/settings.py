@@ -44,6 +44,8 @@ if _HAS_PYDANTIC_SETTINGS:
         rate_limit_fail_open: bool = True
         cors_origins: list[str] = ["*"]
         few_shot_top_k: int = 3
+        # schema 召回默认取 8，覆盖多跳电商问题（最多 7 张金标表）同时控制 prompt 体积。
+        schema_retrieval_top_k: int = 8
         # 准确率增强资源：schema 语义元数据与 few-shot 种子库（缺失时安全降级）。
         schema_metadata_path: str = "./examples/schema_metadata.yaml"
         few_shot_seed_path: str = "./examples/few_shot_seed.jsonl"
@@ -73,6 +75,9 @@ else:
             self.rate_limit_fail_open = os.getenv("TEXT2SQL_RATE_LIMIT_FAIL_OPEN", "1") in ("1", "true", "True")
             self.cors_origins = ["*"]
             self.few_shot_top_k = int(os.getenv("TEXT2SQL_FEW_SHOT_TOP_K", "3"))
+            self.schema_retrieval_top_k = int(
+                os.getenv("TEXT2SQL_SCHEMA_RETRIEVAL_TOP_K", "8")
+            )
             self.schema_metadata_path = os.getenv(
                 "TEXT2SQL_SCHEMA_METADATA_PATH", "./examples/schema_metadata.yaml"
             )

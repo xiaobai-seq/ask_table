@@ -230,6 +230,199 @@ retrieval:
       boosts:
         - tables: [orders]
           boost: 0.10
+    - match:
+        any:
+          - terms_any: [优惠券, 券, coupon, coupons, 核销, 领取, 满减, 过期]
+          - phrases_any: [优惠券, 满减券, 已过期优惠券, 用户券, 过期未使用]
+      boosts:
+        - tables: [coupons]
+          boost: 0.58
+        - tables: [user_coupons]
+          boost: 0.58
+        - tables: [orders]
+          boost: 0.12
+    - match:
+        phrases_any: [优惠来源组合, 无优惠, 券和促销同时使用]
+      boosts:
+        - tables: [orders]
+          boost: 0.90
+        - tables: [coupons, user_coupons, promotions, promotion_products]
+          boost: -0.42
+    - match:
+        any:
+          - terms_any: [促销, promotion, promotions, 活动期, 促销价, 折扣深度]
+          - phrases_any: [促销类型, 参与sku, 活动期内]
+      boosts:
+        - tables: [promotions]
+          boost: 0.56
+        - tables: [promotion_products]
+          boost: 0.52
+        - tables: [skus]
+          boost: 0.18
+    - match:
+        any:
+          - terms_any: [会员, 会员等级, member, membership, 等级]
+          - phrases_any: [会员等级, 高价值沉默用户]
+      boosts:
+        - tables: [membership_levels]
+          boost: 0.50
+        - tables: [users]
+          boost: 0.22
+    - match:
+        any:
+          - terms_any: [注册, 新用户, 首笔, register_date]
+          - phrases_any: [注册月份, 新用户数, 首笔已支付订单]
+      boosts:
+        - tables: [users]
+          boost: 0.46
+        - tables: [orders]
+          boost: 0.18
+        - tables: [return_orders, order_items, inventory_movements]
+          boost: -0.14
+    - match:
+        any:
+          - terms_any: [默认地址, 收货地址, 地址]
+          - phrases_any: [默认地址, 收货城市]
+      boosts:
+        - tables: [user_addresses]
+          boost: 0.46
+        - tables: [users]
+          boost: 0.18
+        - tables: [orders]
+          boost: 0.12
+    - match:
+        any:
+          - terms_any: [行为事件, 活跃用户, 留存, user_events, event_type, session_id]
+          - phrases_any: [行为事件, 活跃用户, 下月仍有行为事件]
+      boosts:
+        - tables: [user_events]
+          boost: 0.62
+        - tables: [users]
+          boost: -0.08
+    - match:
+        any:
+          - terms_any: [当前库存, 低库存, 安全库存, 库容, 缺口量, stock]
+          - phrases_any: [低于安全库存, 当前低库存, 库容利用率]
+      boosts:
+        - tables: [inventory]
+          boost: 0.56
+        - tables: [warehouses]
+          boost: 0.20
+    - match:
+        any:
+          - terms_any: [库存流水, 出库, 入库, inbound, outbound, movement]
+          - phrases_any: [库存流水, 出库总量, 最近30天]
+      boosts:
+        - tables: [inventory_movements]
+          boost: 0.56
+        - tables: [warehouses]
+          boost: 0.18
+        - tables: [inventory]
+          boost: -0.36
+    - match:
+        any:
+          - terms_any: [净流入, net_inflow]
+          - phrases_any: [库存净流入量, 入库量减出库量]
+      boosts:
+        - tables: [inventory_movements]
+          boost: 0.36
+        - tables: [skus]
+          boost: 0.20
+        - tables: [inventory, warehouses]
+          boost: -0.26
+    - match:
+        all:
+          - terms_any: [供应商, supplier, suppliers]
+          - any:
+              - terms_any: [低库存, safety_stock]
+              - phrases_any: [低库存风险]
+      boosts:
+        - tables: [inventory, skus, spus, suppliers]
+          boost: 0.24
+        - tables: [warehouses]
+          boost: -0.30
+    - match:
+        any:
+          - terms_any: [支付记录, 成功支付, paid_at, payment, payments]
+          - phrases_any: [成功支付金额, 缺少成功支付记录]
+      boosts:
+        - tables: [payments]
+          boost: 0.48
+        - tables: [orders]
+          boost: 0.12
+    - match:
+        any:
+          - terms_any: [退货件数, 退货率, 售后, return_items, return_orders]
+          - phrases_any: [退货件数, 退货率, 售后]
+      boosts:
+        - tables: [return_orders]
+          boost: 0.42
+        - tables: [return_items]
+          boost: 0.42
+    - match:
+        all:
+          - any:
+              - terms_any: [退货率]
+              - phrases_any: [退货件数相对销售件数]
+          - any:
+              - terms_any: [品类, 类目, category]
+              - phrases_any: [商品品类]
+      boosts:
+        - tables: [skus]
+          boost: 0.30
+        - tables: [refunds]
+          boost: -0.32
+    - match:
+        any:
+          - terms_any: [属性, 颜色, sku_attributes]
+          - phrases_any: [颜色属性]
+      boosts:
+        - tables: [sku_attributes]
+          boost: 0.52
+        - tables: [skus]
+          boost: 0.16
+    - match:
+        any:
+          - terms_any: [毛利, 成本, cost, subtotal]
+          - phrases_any: [销售额用order_items.subtotal, 成本用skus.cost]
+      boosts:
+        - tables: [order_items]
+          boost: 0.32
+        - tables: [skus]
+          boost: 0.24
+        - tables: [orders]
+          boost: 0.16
+    - match:
+        phrases_any: [活动期内参与SKU已支付销售额, 活动前等长周期销售额]
+      boosts:
+        - tables: [promotions, promotion_products]
+          boost: 0.24
+        - tables: [order_items]
+          boost: 0.30
+        - tables: [orders]
+          boost: 0.24
+        - tables: [skus]
+          boost: -0.46
+    - match:
+        phrases_any: [订单商品金额与订单明细小计, 明细小计之和, total_spent与用户已支付订单累计金额]
+      boosts:
+        - tables: [orders]
+          boost: 0.42
+        - tables: [order_items]
+          boost: 0.30
+        - tables: [payments]
+          boost: -0.42
+    - match:
+        any:
+          - terms_any: [评价一致性, product_reviews]
+          - phrases_any: [评价订单状态, review_order_status]
+      boosts:
+        - tables: [product_reviews]
+          boost: 0.48
+        - tables: [order_items]
+          boost: 0.22
+        - tables: [orders]
+          boost: 0.16
 
   relationship_path:
     max_depth: 4

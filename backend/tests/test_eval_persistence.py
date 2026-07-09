@@ -2,9 +2,17 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from text2sql.core.models import EvalResult
-from text2sql.eval import _build_eval_run_repository, persist_eval_run, summarize_results
+from text2sql.eval import (
+    _external_ai_eval_services,
+    _build_eval_run_repository,
+    persist_eval_run,
+    summarize_results,
+    validate_external_ai_eval_consent,
+    validate_external_llm_eval_consent,
+)
 from text2sql.persistence.repository import InMemoryEvalRunRepository
 
 try:
@@ -105,6 +113,64 @@ class EvalRunRepositoryBuilderTests(unittest.TestCase):
 
         self.assertEqual(record.passed, 1)
         self.assertEqual(record.metrics, {"ok": 1.0})
+
+
+class ExternalAIEvalConsentTests(unittest.TestCase):
+    def _settings(self, **overrides):
+        values = {
+            "use_llm": True,
+            "dashscope_api_key": "test-key",
+            "dashscope_http_base_url": "https://example.invalid/api/v1",
+        }
+        values.update(overrides)
+        return SimpleNamespace(**values)
+
+    def test_external_ai_eval_requires_explicit_consent(self):
+        with patch.dict("os.environ", {}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "external AI services"):
+                validate_external_ai_eval_consent(self._settings(), mode="e2e")
+
+    def test_external_ai_eval_allows_explicit_flag(self):
+        with patch.dict("os.environ", {}, clear=True):
+            validate_external_ai_eval_consent(
+                self._settings(),
+                mode="e2e",
+                allow_external_ai_eval=True,
+            )
+
+    def test_external_ai_eval_allows_env_flag(self):
+        with patch.dict("os.environ", {"TEXT2SQL_ALLOW_EXTERNAL_AI_EVAL": "1"}, clear=True):
+            validate_external_ai_eval_consent(self._settings(), mode="fixed-tables")
+
+    def test_external_ai_eval_keeps_legacy_llm_flag_alias(self):
+        with patch.dict("os.environ", {}, clear=True):
+            validate_external_llm_eval_consent(
+                self._settings(),
+                mode="e2e",
+                allow_external_llm_eval=True,
+            )
+
+    def test_retrieval_mode_requires_consent_for_embedding_and_rerank(self):
+        with patch.dict("os.environ", {}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "embedding"):
+                validate_external_ai_eval_consent(self._settings(), mode="retrieval")
+
+    def test_disabled_llm_still_requires_consent_for_embedding_and_rerank(self):
+        with patch.dict("os.environ", {}, clear=True):
+            services = _external_ai_eval_services(self._settings(use_llm=False), mode="e2e")
+            self.assertEqual({service["name"] for service in services}, {"embedding", "rerank"})
+            with self.assertRaisesRegex(RuntimeError, "rerank"):
+                validate_external_ai_eval_consent(self._settings(use_llm=False), mode="e2e")
+
+    def test_external_ai_eval_allows_no_api_key_and_local_llm_endpoint(self):
+        with patch.dict("os.environ", {}, clear=True):
+            validate_external_ai_eval_consent(
+                self._settings(
+                    dashscope_api_key=None,
+                    dashscope_http_base_url="http://127.0.0.1:8000/v1",
+                ),
+                mode="e2e",
+            )
 
 
 if __name__ == "__main__":

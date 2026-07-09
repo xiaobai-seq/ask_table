@@ -174,6 +174,11 @@ class HybridTableRetriever:
         self.reranker = reranker or default_reranker(self.domain_profile)
         self.rrf_k = rrf_k
         self._table_index = {table.name: index for index, table in enumerate(tables)}
+        self._column_table_counts = Counter(
+            column.name.lower()
+            for table in tables
+            for column in table.columns
+        )
         self._relationship_adjacency = self._build_relationship_adjacency(tables)
 
     def _build_document(self, table: TableInfo) -> str:
@@ -225,10 +230,14 @@ class HybridTableRetriever:
                 self.domain_profile,
             )
             semantic_boost = self._semantic_table_boost(query, table)
+            explicit_boost = self._explicit_schema_reference_boost(query, table)
+            if explicit_boost:
+                reasons[index].append("explicit_schema_reference")
             boosted[index] = (
                 score
                 + 0.05 * (comment_boost + column_boost)
                 + semantic_boost
+                + explicit_boost
                 + self._configured_table_boost(query, table)
             )
 
@@ -251,7 +260,13 @@ class HybridTableRetriever:
             ),
             reverse=True,
         )[:top_k]
-        final_indexes = self._complete_relationship_paths(final_indexes, query, top_k, reasons)
+        final_indexes = self._complete_relationship_paths(
+            final_indexes,
+            query,
+            top_k,
+            reasons,
+            boosted,
+        )
 
         return [
             RetrievalHit(
@@ -284,6 +299,35 @@ class HybridTableRetriever:
             else:
                 matched = True
             boost += self._float(rule.get("boost" if matched else "penalty"), 0.0)
+        return boost
+
+    def _explicit_schema_reference_boost(self, query: str, table: TableInfo) -> float:
+        """用户直接写出表名或字段名时，将其视为强 schema 约束。
+
+        业务问题里经常会出现 ``payments.paid_at`` 或 ``users.total_spent`` 这类
+        明确引用。BM25/向量会把它们当普通文本处理，容易被宽泛业务词（订单、金额）
+        稀释；这里把显式 schema 引用提升为通用排序信号。
+        """
+
+        raw_query = (query or "").lower()
+        if not raw_query:
+            return 0.0
+
+        table_name = table.name.lower()
+        boost = 0.0
+        if table_name in raw_query:
+            boost += 0.9
+
+        for column in table.columns:
+            column_name = column.name.lower()
+            if f"{table_name}.{column_name}" in raw_query:
+                boost += 1.2
+            elif (
+                len(column_name) >= 4
+                and self._column_table_counts.get(column_name, 0) == 1
+                and column_name in raw_query
+            ):
+                boost += 0.35
         return boost
 
     def _configured_table_boost(self, query: str, table: TableInfo) -> float:
@@ -430,6 +474,7 @@ class HybridTableRetriever:
         query: str,
         top_k: int,
         reasons: dict[int, list[str]],
+        scores: dict[int, float],
     ) -> list[int]:
         """在最终 topK 里优先展示明确多跳关系路径，补齐配置指定的桥接表。"""
 
@@ -448,7 +493,16 @@ class HybridTableRetriever:
         for index in final_indexes:
             if index not in ordered:
                 ordered.append(index)
-        return ordered[:top_k]
+        order = {index: position for position, index in enumerate(ordered)}
+        path_set = set(path_indexes)
+        return sorted(
+            ordered,
+            key=lambda index: (
+                scores.get(index, 0.0) + (0.18 if index in path_set else 0.0),
+                -order[index],
+            ),
+            reverse=True,
+        )[:top_k]
 
     def _best_relationship_path(
         self,

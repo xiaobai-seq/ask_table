@@ -1,9 +1,13 @@
 import asyncio
+import datetime as dt
+from decimal import Decimal
+import json
 import tempfile
 import unittest
+from pathlib import Path
 
 from text2sql.core.graph import Text2SQLWorkflow
-from text2sql.core.models import EvalResult, strip_trace_only_fields, to_plain
+from text2sql.core.models import EvalResult, SQLPlan, strip_trace_only_fields, to_plain
 from text2sql.core.sample_data import create_sample_database
 
 
@@ -29,6 +33,53 @@ class EvalResultTraceTests(unittest.TestCase):
         plain = to_plain(result)
         self.assertEqual(plain["trace"]["prompt"], "PROMPT_X")
         self.assertEqual(plain["trace"]["retrieval_hits"][0]["table"], "orders")
+
+    def test_trace_mysql_scalar_types_are_json_serializable(self):
+        result = EvalResult(
+            "c1",
+            True,
+            {"value_set_exact": Decimal("1.0")},
+            "SELECT 1",
+            trace={
+                "execution_rows": [
+                    {
+                        "amount": Decimal("12.34"),
+                        "order_date": dt.date(2024, 1, 2),
+                        "created_at": dt.datetime(2024, 1, 2, 3, 4, 5),
+                    }
+                ],
+            },
+        )
+
+        plain = to_plain(result)
+        json.dumps(plain, ensure_ascii=False)
+
+        self.assertEqual(plain["metrics"]["value_set_exact"], 1.0)
+        self.assertEqual(plain["trace"]["execution_rows"][0]["amount"], 12.34)
+        self.assertEqual(plain["trace"]["execution_rows"][0]["order_date"], "2024-01-02")
+
+    def test_write_report_tolerates_mysql_scalar_types(self):
+        from text2sql.eval import write_report
+
+        result = EvalResult(
+            "c1",
+            True,
+            {"value_set_exact": Decimal("1.0")},
+            "SELECT 1",
+            trace={"execution_rows": [{"amount": Decimal("12.34")}]},
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = f"{tmpdir}/report.json"
+            write_report(
+                report_path,
+                [result],
+                metadata={"generated_at": dt.datetime(2024, 1, 2, 3, 4, 5)},
+            )
+            payload = json.loads(Path(report_path).read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["metadata"]["generated_at"], "2024-01-02T03:04:05")
+        self.assertEqual(payload["results"][0]["trace"]["execution_rows"][0]["amount"], 12.34)
 
 
 class SqlPromptTracingTests(unittest.TestCase):
@@ -79,6 +130,15 @@ class EvalCaseTraceCollectionTests(unittest.TestCase):
             "retrieval_hits": [RetrievalHit(table=TableInfo(name="order_items"), score=0.9)],
             "table_relationship": [],
             "sql_prompt": "PROMPT_X",
+            "sql_plan": SQLPlan(
+                "SELECT 1",
+                reasoning="fixed after quality gate",
+                confidence=0.91,
+                warnings=(
+                    "quality_gate_issue:输出列不完整：需要输出 count",
+                    "quality_gate_repair",
+                ),
+            ),
             "generated_sql": "SELECT 1",
             "execution_result": ExecutionResult(
                 columns=("m",), rows=({"m": 100},), row_count=1
@@ -105,6 +165,15 @@ class EvalCaseTraceCollectionTests(unittest.TestCase):
         self.assertEqual(trace["retrieval_hits"][0]["table"], "order_items")
         self.assertEqual(trace["prompt"], "PROMPT_X")
         self.assertEqual(trace["generated_sql"], "SELECT 1")
+        self.assertEqual(trace["sql_reasoning"], "fixed after quality gate")
+        self.assertEqual(trace["sql_confidence"], 0.91)
+        self.assertIn("quality_gate_repair", trace["sql_warnings"])
+        self.assertEqual(trace["quality_gate_issues"], ["输出列不完整：需要输出 count"])
+        self.assertEqual(trace["quality_gate_remaining_issues"], [])
+        self.assertTrue(trace["quality_gate_repaired"])
+        self.assertFalse(trace["quality_gate_repair_failed"])
+        self.assertFalse(trace["quality_gate_repair_unresolved"])
+        self.assertFalse(trace["quality_gate_template_fallback"])
         self.assertEqual(trace["execution_rows"], [{"m": 100}])
         self.assertEqual(trace["row_count"], 1)
 
@@ -125,6 +194,10 @@ class EvalCaseTraceCollectionTests(unittest.TestCase):
                     "rewritten_query": "q1",
                     "retrieval_hits": [{"table": "orders"}],
                     "prompt": "P1",
+                    "quality_gate_issues": ["issue A"],
+                    "quality_gate_repaired": True,
+                    "quality_gate_template_fallback": True,
+                    "sql_warnings": ["quality_gate_issue:issue A", "quality_gate_repair"],
                     "execution_rows": [{"m": 1}],
                     "row_count": 1,
                 },
@@ -141,6 +214,14 @@ class EvalCaseTraceCollectionTests(unittest.TestCase):
         self.assertEqual(by_case["c1"].retrieval_hits[0]["table"], "orders")
         self.assertTrue(by_case["c1"].passed)
         self.assertEqual(by_case["c1"].metrics["value_set_exact"], 1.0)
+        self.assertEqual(
+            by_case["c1"].metrics["sql_generation"]["quality_gate_issues"],
+            ["issue A"],
+        )
+        self.assertTrue(by_case["c1"].metrics["sql_generation"]["quality_gate_repaired"])
+        self.assertTrue(
+            by_case["c1"].metrics["sql_generation"]["quality_gate_template_fallback"]
+        )
 
 
 class RunCasePassGatingTests(unittest.TestCase):

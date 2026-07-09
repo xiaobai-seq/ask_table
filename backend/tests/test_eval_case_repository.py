@@ -14,7 +14,7 @@ except Exception:
 
 
 def _record(run_id: int, case_id: str = "c1") -> EvalCaseResultRecord:
-    return EvalCaseResultRecord(
+    record = EvalCaseResultRecord(
         run_id=run_id,
         case_id=case_id,
         query="各品类销售额",
@@ -31,6 +31,11 @@ def _record(run_id: int, case_id: str = "c1") -> EvalCaseResultRecord:
         metrics={"table_recall": 1.0, "value_set_exact": 1.0},
         errors=[],
     )
+    record.metrics["sql_generation"] = {
+        "quality_gate_issues": ["issue A"],
+        "quality_gate_repaired": True,
+    }
+    return record
 
 
 class EvalCaseResultRepositoryContract:
@@ -56,6 +61,8 @@ class EvalCaseResultRepositoryContract:
         # JSON 结构化字段应原样回读。
         self.assertEqual(by_case["c1"].retrieval_hits[0]["table"], "order_items")
         self.assertEqual(by_case["c1"].metrics["value_set_exact"], 1.0)
+        self.assertEqual(by_case["c1"].metrics["sql_generation"]["quality_gate_issues"], ["issue A"])
+        self.assertTrue(by_case["c1"].metrics["sql_generation"]["quality_gate_repaired"])
         self.assertTrue(by_case["c1"].passed)
         self.assertIsNotNone(by_case["c1"].id)
 
